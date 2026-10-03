@@ -2,31 +2,21 @@
 """
 Message Gateway — Flask API + shared dispatch core.
 
-Website aur Telegram bot dono EXACTLY isi file ke helpers chalate hain,
-isliye dono kabhi diverge nahi ho sakte.
+Website aur Telegram bot dono EXACTLY isi file ke helpers chalate hain.
 
-  Website :  python3 app.py            ->  http://127.0.0.1:5000
-  Bot     :  python3 gateway_bot.py    ->  dono ek saath bhi chal sakte hain
-
-NOTE: the bot talks to this file over HTTP (not by importing it), so both
-processes share ONE delivery tracker instead of two private copies.
-
-v3 — SEQUENTIAL DISPATCH (device-by-device, SIM1→SIM2 round-robin):
-  · Har message EK WAQT me jaata hai — koi parallel conflict nahi.
-  · Order: Dev1-SIM1, Dev1-SIM2, Dev2-SIM1, Dev2-SIM2, Dev3-SIM1, ...
-    Phir wapas Dev1-SIM1 se (round-robin).
-  · Beech me SEND_INTERVAL (default 2.0s) ka gap — Android app SIM
-    switch kar sake, Firebase update ho.
+v4 — SMART PARALLEL DISPATCH:
+  · Alag devices PARALLEL chalte hain (fast blast).
+  · Same device ke messages ke beech SEND_INTERVAL gap (safe, koi overlap nahi).
+  · Round-robin ordering: Dev1-SIM1, Dev1-SIM2, Dev2-SIM1, Dev2-SIM2, ...
   · Device count FULLY DYNAMIC — 3 ho ya 100, sab automatically adjust.
-  · Auto-queue HATA diya — sequential mode me zaroorat nahi.
-  · REAL delivery accounting — har worker apna Firebase result record.
-  · per-device breakdown, ek automatic retry per message.
-  · jobs are persisted to delivery.json.
-  · GET /api/delivery returns the live snapshot — poll it for the true count.
+  · Sequential within a device, parallel across devices.
+  · 20 messages, 3 devices → ~14s (pehle 40s).
+  · 20 messages, 10 devices → ~4s (pehle 40s).
+  · REAL delivery accounting, per-device counters, retry support.
   · 1 SIM = 1 MESSAGE (no parts, no splitting).
 
 Endpoints:
-  GET  /api/status        -> {configured}
+  GET  /api/status        -> {configured, mode, send_interval, sims_per_device}
   POST /api/firebase      -> {url, key}
   GET  /api/devices       -> {ok, devices:[...]}
   GET  /api/delivery      -> {ok, job:{...}, jobs:[...]}
@@ -55,13 +45,13 @@ app = Flask(__name__, static_folder=BASE, static_url_path='')
 # ═══════════════════════════════════════════════════════════════
 #  CONFIG — env vars se tunable
 # ═══════════════════════════════════════════════════════════════
-SIMS_PER_DEVICE = int(os.environ.get('SIMS_PER_DEVICE', '2'))   # har device me 2 SIM
-SEND_INTERVAL = float(os.environ.get('SEND_INTERVAL', '2.0'))   # messages ke beech gap (sec)
-MAX_COUNT = 2000                                                # ek request me max messages
+SIMS_PER_DEVICE = int(os.environ.get('SIMS_PER_DEVICE', '2'))
+SEND_INTERVAL = float(os.environ.get('SEND_INTERVAL', '2.0'))   # same-device gap (sec)
+MAX_COUNT = 2000
 GATEWAY_PORT = int(os.environ.get('GATEWAY_PORT', '5000'))
-WORKERS = int(os.environ.get('GATEWAY_WORKERS', '10'))          # kam workers — sequential me zyada zaroorat nahi
+WORKERS = int(os.environ.get('GATEWAY_WORKERS', '20'))
 JOBS_KEPT = 8
-STALE_AFTER = 900    # 15 min ke baad running job stale maana jaata hai
+STALE_AFTER = 900
 
 
 def log(msg=''):
@@ -69,7 +59,6 @@ def log(msg=''):
 
 
 def clamp_count(v, default=1):
-    """Kitne messages bhejne hain — 1..MAX_COUNT."""
     try:
         n = int(float(str(v).strip()))
     except (TypeError, ValueError):
@@ -129,19 +118,19 @@ def firebase_url(base, path=''):
     return base + ('/' + encoded if encoded else '') + '.json'
 
 
+_HTTP_LOCAL = threading.local()
+
+
 def _http_session():
     session = getattr(_HTTP_LOCAL, 'session', None)
     if session is None:
         session = requests.Session()
-        adapter = HTTPAdapter(pool_connections=32, pool_maxsize=64, max_retries=0)
+        adapter = HTTPAdapter(pool_connections=64, pool_maxsize=128, max_retries=0)
         session.mount('http://', adapter)
         session.mount('https://', adapter)
         session.headers.update({'Connection': 'keep-alive'})
         _HTTP_LOCAL.session = session
     return session
-
-
-_HTTP_LOCAL = threading.local()
 
 
 def firebase_request(method, base, key, path='', body=None, timeout=6):
@@ -161,7 +150,6 @@ def require_config():
 
 
 def connect_firebase(url, key):
-    """Credentials Firebase se validate karke save."""
     if not key or not url:
         raise ValueError('Both Database URL and secret are required')
     url = normalize_url(url)
@@ -171,7 +159,6 @@ def connect_firebase(url, key):
 
 
 def fetch_clients(cfg):
-    """Raw `clients` dict straight from Firebase using pooled keep-alive connection."""
     target = firebase_url(cfg['url'], 'clients') + '?' + urlencode({'auth': cfg['key']})
     resp = _http_session().get(target, timeout=8)
     resp.raise_for_status()
@@ -202,7 +189,6 @@ def device_list(raw):
 
 
 def get_devices(cfg=None):
-    """Returns (devices, error). Never raises."""
     cfg = cfg or load_config()
     if not cfg:
         return [], 'Firebase is not configured.'
@@ -216,14 +202,6 @@ def get_devices(cfg=None):
 #  DELIVERY TRACKER
 # ═══════════════════════════════════════════════════════════════
 class DeliveryTracker:
-    """
-    Har blast ek 'job' hai. Job ke andar har device ka apna counter hai.
-
-    submitted -> task queue me daal diya gaya
-    sent     -> Firebase ne HTTP 200 diya (REAL delivery)
-    failed   -> exception, retry ke baad bhi nahi hua
-    """
-
     def __init__(self):
         self._lock = threading.RLock()
         self._jobs = OrderedDict()
@@ -466,7 +444,7 @@ TRACKER = DeliveryTracker()
 
 
 # ═══════════════════════════════════════════════════════════════
-#  BROADCAST — SEQUENTIAL DISPATCH
+#  BROADCAST — SMART PARALLEL DISPATCH
 # ═══════════════════════════════════════════════════════════════
 def _send_once(cfg, device_id, sim, count, to, message):
     path = f'clients/{device_id}/webhookEvent/sendSms'
@@ -484,7 +462,7 @@ def build_slots(devices):
     """
     Har device ke SIMS_PER_DEVICE slots.
     Order: Dev1-SIM1, Dev1-SIM2, Dev2-SIM1, Dev2-SIM2, ...
-    Online devices PEHLE (zyada success rate).
+    Online devices PEHLE.
     """
     slots = []
     for d in sorted(devices, key=lambda x: (not x['status'], x['name'].lower())):
@@ -506,7 +484,7 @@ def send_single_task(cfg, device_id, sim, to, message, job_id=None):
         try:
             status = _send_once(cfg, device_id, sim, 1, to, message)
             TRACKER.finish(job_id, device_id, True)
-            log(f'[✅ INSTANT] {label} -> HTTP {status}')
+            log(f'[✅] {label} -> HTTP {status}')
             return True
         except Exception as e:
             last = e
@@ -514,42 +492,63 @@ def send_single_task(cfg, device_id, sim, to, message, job_id=None):
                 continue
     TRACKER.record_failure(job_id, device_id, sim)
     TRACKER.finish(job_id, device_id, False)
-    log(f'[❌ FAILED] {label} -> {last}')
+    log(f'[❌] {label} -> {last}')
     return False
 
 
 def _dispatch_sequentially(cfg, to, message, slots, count, job_id):
     """
-    Sequential dispatch — EK message ek waqt.
-    Order: Dev1-SIM1 → Dev1-SIM2 → Dev2-SIM1 → Dev2-SIM2 → ...
-    Phir wapas Dev1-SIM1 se (round-robin).
-    Beech me SEND_INTERVAL gap (default 2s).
+    SMART PARALLEL:
+      · Har message ek slot pe assign (round-robin).
+      · Alag devices PARALLEL chalte hain — speed 5-20x.
+      · Same device ke messages ke beech SEND_INTERVAL gap — koi overlap nahi.
+      · Device1-SIM1, Device1-SIM2, Device2-SIM1, Device2-SIM2, ... order.
     """
     total_slots = len(slots)
-    log(f'[SEQ-START] job={job_id} count={count} slots={total_slots} '
-        f'interval={SEND_INTERVAL}s')
 
+    # 1) Round-robin assign each message to a slot
+    assignments = []
     for i in range(count):
         slot = slots[i % total_slots]
-        TRACKER.submit(job_id, slot['device_id'])
-        try:
-            send_single_task(cfg, slot['device_id'], slot['sim'],
-                             to, message, job_id)
-        except Exception as e:
-            log(f'[SEQ-ERR] {slot["device_id"][:6]}..SIM{slot["sim"]}: {e}')
+        assignments.append((slot, i))
 
-        # Gap between messages — last message ke baad wait nahi
-        if i < count - 1:
-            time.sleep(SEND_INTERVAL)
+    # 2) Group by device — each device gets its own queue
+    by_device = {}
+    for slot, idx in assignments:
+        by_device.setdefault(slot['device_id'], []).append((slot, idx))
+
+    # 3) Pre-submit ALL to tracker — 'complete' flag sahi time pe fire hoga
+    for slot, idx in assignments:
+        TRACKER.submit(job_id, slot['device_id'])
+
+    log(f'[SEQ-START] job={job_id} count={count} devices={len(by_device)} '
+        f'slots={total_slots} gap={SEND_INTERVAL}s')
+
+    # 4) Har device ka apna thread — parallel
+    def run_device(dev_id, tasks):
+        for i, (slot, idx) in enumerate(tasks):
+            try:
+                send_single_task(cfg, slot['device_id'], slot['sim'],
+                                 to, message, job_id)
+            except Exception as e:
+                log(f'[SEQ-ERR] {dev_id[:6]}..SIM{slot["sim"]}: {e}')
+            # Gap between THIS device's messages only
+            if i < len(tasks) - 1:
+                time.sleep(SEND_INTERVAL)
+
+    threads = []
+    for dev_id, tasks in by_device.items():
+        t = threading.Thread(target=run_device, args=(dev_id, tasks), daemon=True)
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join()
 
     log(f'[SEQ-DONE] job={job_id} dispatched {count} messages')
 
 
 def blast(cfg, to, message, count, online_only=False, job_id=None):
-    """
-    Sequential blast — ek message ek waqt, device-by-device SIM1→SIM2.
-    Device count FULLY DYNAMIC — jitne devices Firebase me hain, sab use honge.
-    """
     count = clamp_count(count)
     devices = device_list(fetch_clients(cfg))
     if not devices:
@@ -566,7 +565,6 @@ def blast(cfg, to, message, count, online_only=False, job_id=None):
     if new_job:
         job_id = TRACKER.start(to, message, devices, count, capacity, count)
 
-    # Sequential dispatch background thread me
     threading.Thread(
         target=_dispatch_sequentially,
         args=(cfg, to, message, slots, count, job_id),
@@ -591,19 +589,14 @@ def blast(cfg, to, message, count, online_only=False, job_id=None):
 
 
 def broadcast(cfg, to, message, count, online_only=False):
-    """Public entry — sequential blast. Koi auto-queue nahi."""
     count = clamp_count(count)
     return blast(cfg, to, message, count, online_only)
 
 
 # ═══════════════════════════════════════════════════════════════
-#  RETRY FAILED — sirf fail hue messages dobara
+#  RETRY FAILED
 # ═══════════════════════════════════════════════════════════════
 def broadcast_failed(cfg, job_id=None, only=None):
-    """
-    Sirf FAIL hue messages dobara bhejo — baaki dobara mat bhejo.
-    Returns {ok, retried, devices_count, job_id}.
-    """
     fails = TRACKER.failures(job_id)
     if not fails:
         raise RuntimeError('Nothing to retry — is blast me koi failure nahi.')
@@ -632,7 +625,6 @@ def broadcast_failed(cfg, job_id=None, only=None):
 
     new_job = TRACKER.start(to, message, involved, len(todo), len(todo), len(todo))
 
-    # Retry bhi sequential — ek waqt me ek
     def _retry_worker():
         for dev_id, sim in todo:
             TRACKER.submit(new_job, dev_id)
@@ -662,7 +654,7 @@ def api_status():
     return jsonify({
         'configured': is_configured(),
         'workers': WORKERS,
-        'mode': 'sequential',
+        'mode': 'smart_parallel',
         'send_interval': SEND_INTERVAL,
         'sims_per_device': SIMS_PER_DEVICE,
     })
@@ -690,20 +682,18 @@ def api_devices():
 
 @app.get('/api/delivery')
 def api_delivery():
-    """REAL live progress. ?job=<id> se kisi purane blast ko dekho."""
     job = TRACKER.snapshot(request.args.get('job'))
     return jsonify({
         'ok': True,
         'job': job,
         'jobs': TRACKER.job_ids(),
         'active': TRACKER.active(),
-        'mode': 'sequential',
+        'mode': 'smart_parallel',
     })
 
 
 @app.get('/api/delivery/failures')
 def api_delivery_failures():
-    """Exactly kaun se (device, SIM) fail hue."""
     job_id = request.args.get('job')
     fails = TRACKER.failures(job_id)
     limit = min(len(fails), 500)
@@ -718,7 +708,6 @@ def api_delivery_failures():
 
 @app.post('/api/message-retry')
 def api_message_retry():
-    """Sirf FAIL hue messages dobara bhejo. {only: deviceIdPrefix}"""
     data = request.get_json(silent=True) or {}
     cfg = load_config()
     if not cfg:
@@ -759,9 +748,9 @@ def api_message():
 #  MAIN
 # ═══════════════════════════════════════════════════════════════
 if __name__ == '__main__':
-    log(f'⚡ Sequential Gateway Engine — http://127.0.0.1:{GATEWAY_PORT}')
+    log(f'⚡ Smart Parallel Gateway Engine — http://127.0.0.1:{GATEWAY_PORT}')
     log(f'   1 SIM = 1 message · {SIMS_PER_DEVICE} SIM/device · '
-        f'interval {SEND_INTERVAL}s · workers {WORKERS}')
-    log(f'   Mode: SEQUENTIAL (Dev1-SIM1 → Dev1-SIM2 → Dev2-SIM1 → ...)')
+        f'same-device gap {SEND_INTERVAL}s · workers {WORKERS}')
+    log(f'   Mode: SMART PARALLEL (across devices parallel, within device sequential)')
     log(f'   Bind: 0.0.0.0:{GATEWAY_PORT}')
     app.run(host='0.0.0.0', port=GATEWAY_PORT, debug=False, threaded=True)
