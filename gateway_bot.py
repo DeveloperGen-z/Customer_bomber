@@ -2,6 +2,7 @@
 """
 Gateway Bot — Premium Telegram console for your SMS gateway.
 Hinglish HUD · Premium UI · Full Admin Toolkit · Streak Rewards
++ Smart SIM Pool Check + Delivery Warning
 """
 import json
 import os
@@ -37,6 +38,10 @@ MAX_STREAK_BONUS = 20
 COOLDOWN = 3
 TICK = 0.5
 MAX_COUNT = 2000
+
+# SIM distribution safety: agar online SIM < 2 aur count bada hai to warn
+WARN_SINGLE_SIM_THRESHOLD = 10
+WARN_MULTI_SIM_PER_DEVICE = 15
 
 BAR, EMPTY, BAR_LEN = '▰', '▱', 14
 PHONE_RE = re.compile(r'^\+?[1-9]\d{6,14}$')
@@ -154,6 +159,68 @@ def api(path, payload=None, timeout=15):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  SIM POOL HELPERS (fix for distribution visibility)
+# ═══════════════════════════════════════════════════════════════
+def get_online_devices():
+    """Return list of online devices from gateway."""
+    try:
+        res = api('/api/devices', timeout=10)
+        if not res.get('ok'):
+            return []
+        return [d for d in (res.get('devices') or []) if d.get('status')]
+    except Exception as e:
+        log(f'! get_online_devices failed: {e}')
+        return []
+
+
+def device_short_names(devices, limit=4):
+    """Return short human-readable device names."""
+    out = []
+    for d in devices[:limit]:
+        n = d.get('name') or d.get('model') or 'SIM'
+        out.append(esc(str(n)[:18]))
+    if len(devices) > limit:
+        out.append(f'+{len(devices) - limit} more')
+    return out
+
+
+def build_sim_pool_line(devices):
+    """Format a line showing SIM pool."""
+    n = len(devices)
+    if n == 0:
+        return '📡 <b>SIM Pool:</b> ❌ none online'
+    line = f'📡 <b>SIM Pool:</b> {n} online'
+    names = device_short_names(devices, 4)
+    if names:
+        line += '\n   ├ ' + '\n   ├ '.join(names)
+    return line
+
+
+def build_distribution_warning(devices, count):
+    """
+    Return a warning string (or '') based on SIM pool vs count.
+    This surfaces the 'only 3 of 10 delivered' issue to the user
+    BEFORE points are deducted.
+    """
+    n = len(devices)
+    if n == 0:
+        return ('❌ <b>No Device Online</b>\n'
+                'Gateway me koi SIM connect nahi hai. Admin se device online karwayein.\n\n')
+    if n == 1 and count > WARN_SINGLE_SIM_THRESHOLD:
+        per = max(1, count // 2)
+        return ('⚠️ <b>Single SIM Warning</b>\n'
+                f'Sirf <b>1 SIM</b> online hai. {count} messages me se '
+                f'kuch deliver nahi ho sakte.\n'
+                f'💡 Recommend: <b>{per}</b> ya kam messages bhejein, ya admin se dusra SIM on karwayein.\n\n')
+    if n >= 2 and count > n * WARN_MULTI_SIM_PER_DEVICE:
+        safe = n * WARN_MULTI_SIM_PER_DEVICE
+        return ('⚠️ <b>High Load Warning</b>\n'
+                f'{n} SIM(s) online hain lekin {count} messages zyada hai.\n'
+                f'💡 Recommend: <b>{safe}</b> ya kam messages per blast.\n\n')
+    return ''
+
+
+# ═══════════════════════════════════════════════════════════════
 #  DATABASE
 # ═══════════════════════════════════════════════════════════════
 def load_db():
@@ -193,16 +260,6 @@ def get_user(uid, name='', username=''):
     if key not in db:
         db[key] = new_user(uid, name, username)
         save_db(db)
-    return db[key]
-
-
-def update_user(uid, **kwargs):
-    db = load_db()
-    key = str(uid)
-    if key not in db:
-        return None
-    db[key].update(kwargs)
-    save_db(db)
     return db[key]
 
 
@@ -373,17 +430,23 @@ def live_text(j):
 
 
 def done_text(j, title):
-    return (
+    requested = j.get("requested", j["total"])
+    delivered = j.get("sent", 0)
+    missing = max(0, requested - delivered - j.get("failed", 0))
+    out = (
         f'{title}\n'
         f'{"─" * 22}\n\n'
         f'👤 <b>To:</b> <code>{esc(j["to"])}</code>\n'
-        f'🎯 <b>Requested:</b> {j.get("requested", j["total"])}\n'
+        f'🎯 <b>Requested:</b> {requested}\n'
         f'📡 <b>SIM Pool:</b> {j.get("capacity", "?")}\n'
-        f'✅ <b>Success:</b> {j["sent"]} / {j["total"]}\n'
+        f'✅ <b>Delivered:</b> {delivered} / {j["total"]}\n'
         f'❌ <b>Failed:</b> {j["failed"]}\n'
         f'📈 <b>Delivery Rate:</b> {j["success"] if j.get("success") is not None else "—"}%\n'
         f'⏱ <b>Total Time:</b> {j["elapsed"]}s'
     )
+    if missing > 0:
+        out += f'\n\n🔍 <b>Undelivered:</b> {missing} (gateway ne process nahi kiya)\n<i>SIM pool capacity issue ho sakta hai.</i>'
+    return out
 
 
 def failure_text(j):
@@ -477,7 +540,6 @@ def cmd_start(message):
 
     get_user(uid, message.from_user.first_name or '', message.from_user.username or '')
 
-    # referral
     parts = (message.text or '').split()
     if len(parts) > 1 and parts[1].isdigit() and parts[1] != str(uid):
         db = load_db()
@@ -624,7 +686,6 @@ def cmd_extra(message):
     streak = u.get('streak', 0)
 
     if now - last >= 86400:
-        # streak logic — claim within 48h keeps streak
         if last and now - last <= 172800:
             streak += 1
         else:
@@ -661,7 +722,7 @@ def cmd_extra(message):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  ULTRA FEATURES (hidden — not on menu button)
+#  EXTRA FEATURES
 # ═══════════════════════════════════════════════════════════════
 @bot.message_handler(commands=['deepthink'])
 def cmd_deepthink(message):
@@ -693,6 +754,15 @@ def cmd_affords(message):
     u = get_user(message.chat.id)
     bal = u.get('points', 0)
     can_send = bal // COST_PER_MSG
+
+    # add device check here too
+    devices = get_online_devices()
+    sim_note = ''
+    if len(devices) == 0:
+        sim_note = '\n\n❌ <b>No SIM online</b> — blast kaam nahi karega.'
+    elif len(devices) == 1:
+        sim_note = f'\n\n⚠️ Sirf <b>1 SIM</b> online hai. Ek baar me max ~{WARN_SINGLE_SIM_THRESHOLD} messages safe hain.'
+
     kb = types.InlineKeyboardMarkup(row_width=1)
     if can_send > 0:
         kb.add(types.InlineKeyboardButton(f'🚀 Blast {can_send} msgs now', callback_data='start_blast_quick'))
@@ -703,8 +773,9 @@ def cmd_affords(message):
         f'{"─" * 22}\n\n'
         f'💎 <b>Balance:</b> {bal} Points\n'
         f'📩 <b>You can afford:</b> <b>{can_send}</b> SMS\n'
-        f'⚡ <b>Rate:</b> {COST_PER_MSG} point/SMS\n\n'
-        '<i>Zyada points ke liye refer ya daily bonus claim karein.</i>',
+        f'📡 <b>SIMs Online:</b> {len(devices)}\n'
+        f'⚡ <b>Rate:</b> {COST_PER_MSG} point/SMS'
+        + sim_note,
         reply_markup=kb)
 
 
@@ -739,6 +810,10 @@ def cmd_status(message):
         f'📱 <b>Devices:</b> {len(devices)} (🟢 {online} Online)',
         f'👷 <b>Workers:</b> {st.get("workers", "?")}',
     ]
+    if online == 0:
+        lines.append('❌ <b>No SIM online!</b> Blast kaam nahi karega.')
+    elif online == 1:
+        lines.append(f'⚠️ Sirf 1 SIM online. Safe blast limit ~{WARN_SINGLE_SIM_THRESHOLD}.')
     try:
         job = (api('/api/delivery', timeout=8) or {}).get('job')
         if job and job.get('total'):
@@ -927,9 +1002,32 @@ def start_blast(uid, to, msg, count):
         bot.send_message(uid, '⚠ <b>Gateway Busy</b>\nThodi der me try karein.')
         return False
 
+    # ── PRE-FLIGHT SIM POOL CHECK (fix) ──────────────────────
+    try:
+        online_devices = get_online_devices()
+    except Exception:
+        online_devices = []
+
+    sim_line = build_sim_pool_line(online_devices)
+    warn_line = build_distribution_warning(online_devices, count)
+
+    # Refuse blast if no SIM online (saves user's points)
+    if len(online_devices) == 0:
+        BLAST_LOCK.release()
+        bot.send_message(
+            uid,
+            '❌ <b>BLAST CANCELLED</b>\n'
+            f'{"─" * 22}\n\n'
+            'Gateway me koi bhi SIM online nahi hai.\n'
+            'Pehle admin se device connect karwayein.\n\n'
+            '<i>Aapke points deduct nahi kiye gaye.</i>')
+        return False
+
+    # Show initializing message WITH SIM pool info
     live_msg = bot.send_message(
         uid,
-        '⚡ <b>INITIALIZING BLAST...</b>\n\n'
+        f'{warn_line}⚡ <b>INITIALIZING BLAST...</b>\n\n'
+        f'{sim_line}\n'
         f'🎯 <b>Target:</b> {count} SMS\n'
         f'💸 <b>Cost:</b> {cost} points\n'
         f'📝 <b>Message:</b> <code>{esc(msg[:120])}</code>\n\n'
@@ -960,7 +1058,10 @@ def start_blast(uid, to, msg, count):
     remember_number(uid, to)
     PENDING.pop(uid, None)
     WATCHING[uid] = res['job_id']
-    log(f'BLAST {uid}: to={to} count={count} cost={cost} job={res["job_id"]}')
+    log(f'BLAST {uid}: to={to} count={count} cost={cost} '
+        f'sims={len(online_devices)} capacity={res.get("capacity")} '
+        f'dispatched={res.get("dispatched")} queued={res.get("queued")} '
+        f'job={res["job_id"]}')
 
     threading.Thread(target=watch, args=(uid, live_msg.message_id, res['job_id']), daemon=True).start()
     return True
@@ -968,10 +1069,22 @@ def start_blast(uid, to, msg, count):
 
 def ask_count(uid):
     u = get_user(uid)
+    devices = get_online_devices()
+    n = len(devices)
+
+    # safe suggestion
+    if n == 0:
+        safe_hint = '❌ <b>Koi SIM online nahi hai</b> — pehle admin se device on karwayein.'
+    elif n == 1:
+        safe_hint = f'⚠️ Sirf 1 SIM online — <b>{WARN_SINGLE_SIM_THRESHOLD}</b> ya kam messages recommend.'
+    else:
+        safe_hint = f'💡 {n} SIMs online — safe range: <b>1–{n * WARN_MULTI_SIM_PER_DEVICE}</b>'
+
     bot.send_message(
         uid,
         '🔢 <b>Kitne messages bhejne hain?</b>\n\n'
         + plan_text(1, u.get('points', 0)) + '\n\n'
+        + safe_hint + '\n\n'
         '👉 <i>Sirf number type karein (e.g. 10, 50, 100).</i>')
 
 
@@ -1563,6 +1676,15 @@ def watch(chat_id, message_id, job_id):
             f'\n\n🎯 <b>Requested:</b> {job.get("requested", job.get("total", 0))}\n'
             f'📡 <b>SIM Pool:</b> {job.get("capacity", "?")}\n'
             f'🚀 <b>Dispatched:</b> {job.get("dispatched", 0)}')
+
+        # ── Detect missing/undelivered messages ──
+        requested = job.get("requested", job.get("total", 0))
+        delivered = job.get("sent", 0)
+        failed = job.get("failed", 0)
+        missing = max(0, requested - delivered - failed)
+        if missing > 0:
+            text += (f'\n🔍 <b>Undelivered:</b> {missing} (gateway ne queue nahi kiya)\n'
+                     f'<i>SIM pool capacity check karein — /devices</i>')
 
         bad = [d for d in job.get('devices', []) if d.get('failed')]
         if bad:
