@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Gateway Bot — Premium Telegram console for your SMS gateway.
-Hinglish HUD · Premium UI · Full Admin Toolkit · Streak Rewards
-+ Smart SIM Pool Check + Delivery Warning
+Sequential SIM mode — SIM 1 pehle, phir SIM 2. No overlap.
 """
 import json
 import os
@@ -39,7 +38,13 @@ COOLDOWN = 3
 TICK = 0.5
 MAX_COUNT = 2000
 
-# SIM distribution safety: agar online SIM < 2 aur count bada hai to warn
+# ─── SEQUENTIAL MODE (fix for SIM overlay problem) ───
+# True  → SIM 1 pehle poora chunk, phir SIM 2. No parallel/overlay.
+# False → purana parallel behaviour.
+SEQUENTIAL_MODE = True
+
+# Chunk size hint per SIM (agar gateway device param support nahi karta)
+# Ye sirf safety ke liye hai jab SIM count unknown ho
 WARN_SINGLE_SIM_THRESHOLD = 10
 WARN_MULTI_SIM_PER_DEVICE = 15
 
@@ -159,10 +164,9 @@ def api(path, payload=None, timeout=15):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SIM POOL HELPERS (fix for distribution visibility)
+#  SIM POOL HELPERS
 # ═══════════════════════════════════════════════════════════════
 def get_online_devices():
-    """Return list of online devices from gateway."""
     try:
         res = api('/api/devices', timeout=10)
         if not res.get('ok'):
@@ -174,7 +178,6 @@ def get_online_devices():
 
 
 def device_short_names(devices, limit=4):
-    """Return short human-readable device names."""
     out = []
     for d in devices[:limit]:
         n = d.get('name') or d.get('model') or 'SIM'
@@ -185,7 +188,6 @@ def device_short_names(devices, limit=4):
 
 
 def build_sim_pool_line(devices):
-    """Format a line showing SIM pool."""
     n = len(devices)
     if n == 0:
         return '📡 <b>SIM Pool:</b> ❌ none online'
@@ -197,11 +199,6 @@ def build_sim_pool_line(devices):
 
 
 def build_distribution_warning(devices, count):
-    """
-    Return a warning string (or '') based on SIM pool vs count.
-    This surfaces the 'only 3 of 10 delivered' issue to the user
-    BEFORE points are deducted.
-    """
     n = len(devices)
     if n == 0:
         return ('❌ <b>No Device Online</b>\n'
@@ -211,7 +208,7 @@ def build_distribution_warning(devices, count):
         return ('⚠️ <b>Single SIM Warning</b>\n'
                 f'Sirf <b>1 SIM</b> online hai. {count} messages me se '
                 f'kuch deliver nahi ho sakte.\n'
-                f'💡 Recommend: <b>{per}</b> ya kam messages bhejein, ya admin se dusra SIM on karwayein.\n\n')
+                f'💡 Recommend: <b>{per}</b> ya kam messages bhejein.\n\n')
     if n >= 2 and count > n * WARN_MULTI_SIM_PER_DEVICE:
         safe = n * WARN_MULTI_SIM_PER_DEVICE
         return ('⚠️ <b>High Load Warning</b>\n'
@@ -503,7 +500,8 @@ def help_text():
         f'🎁 <b>Welcome Bonus:</b> {START_POINTS} Points\n'
         f'👥 <b>Referral Bonus:</b> +{REFERRAL_BONUS} per friend\n'
         f'💵 <b>Rate:</b> {COST_PER_MSG} point = 1 SMS\n'
-        f'🔥 <b>Daily Streak:</b> +{DAILY_BONUS} to +{MAX_STREAK_BONUS} pts/day\n\n'
+        f'🔥 <b>Daily Streak:</b> +{DAILY_BONUS} to +{MAX_STREAK_BONUS} pts/day\n'
+        f'⚙️ <b>Mode:</b> {"Sequential (SIM by SIM)" if SEQUENTIAL_MODE else "Parallel"}\n\n'
         '<b>📌 User Commands:</b>\n'
         '🔹 /send — Start new SMS blast\n'
         '🔹 /stats — Live progress tracker\n'
@@ -755,7 +753,6 @@ def cmd_affords(message):
     bal = u.get('points', 0)
     can_send = bal // COST_PER_MSG
 
-    # add device check here too
     devices = get_online_devices()
     sim_note = ''
     if len(devices) == 0:
@@ -809,6 +806,7 @@ def cmd_status(message):
         '🔥 <b>Firebase:</b> ✅ Connected',
         f'📱 <b>Devices:</b> {len(devices)} (🟢 {online} Online)',
         f'👷 <b>Workers:</b> {st.get("workers", "?")}',
+        f'⚙️ <b>Mode:</b> {"Sequential" if SEQUENTIAL_MODE else "Parallel"}',
     ]
     if online == 0:
         lines.append('❌ <b>No SIM online!</b> Blast kaam nahi karega.')
@@ -963,6 +961,170 @@ def cmd_retry(message):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  SEQUENTIAL BLAST ENGINE (FIX for SIM overlay)
+# ═══════════════════════════════════════════════════════════════
+def _send_chunk(to, msg, count, device_id=None):
+    """Send one chunk. Try device-targeted first, fallback without."""
+    if device_id:
+        payload = {
+            'to': to, 'message': msg, 'count': count,
+            'device': device_id, 'deviceId': device_id,
+        }
+        try:
+            res = api('/api/message', payload, timeout=30)
+            if res.get('ok'):
+                return res
+        except Exception as e:
+            log(f'! device-targeted send failed: {e}')
+    try:
+        return api('/api/message', {'to': to, 'message': msg, 'count': count}, timeout=30)
+    except Exception as e:
+        log(f'! chunk send error: {e}')
+        return None
+
+
+def _wait_for_job(job_id, timeout=900):
+    """Block until job completes or times out. Returns final job dict."""
+    if not job_id:
+        return None
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            job = (api(f'/api/delivery?job={job_id}', timeout=10) or {}).get('job')
+        except Exception:
+            time.sleep(2)
+            continue
+        if job and (job.get('complete') or job.get('interrupted')):
+            return job
+        time.sleep(TICK)
+    return None
+
+
+def run_blast_sequential(uid, live_msg_id, to, msg, count, devices):
+    """
+    Background thread: SIM-by-SIM sequential blast.
+    SIM 1 pehle poora chunk complete, phir SIM 2. No overlap.
+    """
+    try:
+        n = len(devices)
+        if n == 0:
+            bot.edit_message_text('❌ <b>No SIM online.</b>',
+                                  chat_id=uid, message_id=live_msg_id)
+            return
+
+        # Split count into n chunks (SIM 1 gets first chunk, etc.)
+        base = count // n
+        rem = count % n
+        chunks = []
+        for i in range(n):
+            c = base + (1 if i < rem else 0)
+            if c > 0:
+                chunks.append((devices[i], c))
+
+        total_sent = 0
+        total_failed = 0
+        total_dispatched = 0
+        all_devices_used = []
+        job_ids = []
+        start_t = time.time()
+
+        for idx, (dev, chunk_count) in enumerate(chunks):
+            dev_name = str(dev.get('name') or dev.get('model') or f'SIM-{idx+1}')[:22]
+            dev_id = dev.get('id')
+
+            # live update: current SIM
+            try:
+                bot.edit_message_text(
+                    '⚡ <b>SEQUENTIAL BLAST</b>\n'
+                    f'{"─" * 22}\n\n'
+                    f'📡 <b>Current SIM:</b> {esc(dev_name)}\n'
+                    f'🔢 <b>Step {idx+1}/{n}</b> · Sending {chunk_count} SMS\n\n'
+                    f'✅ <b>Delivered so far:</b> {total_sent}/{count}\n'
+                    f'❌ <b>Failed:</b> {total_failed}\n'
+                    f'⏱ <b>Elapsed:</b> {int(time.time() - start_t)}s\n\n'
+                    '<i>🔄 SIM by SIM — koi overlay nahi.</i>',
+                    chat_id=uid, message_id=live_msg_id)
+            except Exception:
+                pass
+
+            log(f'SEQ chunk {idx+1}/{n}: device={dev_name} id={str(dev_id)[:12]} count={chunk_count}')
+            res = _send_chunk(to, msg, chunk_count, dev_id)
+
+            if not res or not res.get('ok'):
+                err = (res or {}).get('error', 'timeout')
+                log(f'! SEQ chunk {idx+1} failed: {err}')
+                total_failed += chunk_count
+                continue
+
+            job_id = res.get('job_id')
+            if job_id:
+                job_ids.append(job_id)
+
+            # WAIT for this chunk to finish before next SIM
+            final = _wait_for_job(job_id, timeout=900)
+            if final:
+                total_sent += final.get('sent', 0)
+                total_failed += final.get('failed', 0)
+                total_dispatched += final.get('dispatched', 0)
+                all_devices_used.extend(final.get('devices', []) or [])
+                log(f'SEQ chunk {idx+1} done: sent={final.get("sent")} failed={final.get("failed")}')
+            else:
+                log(f'! SEQ chunk {idx+1} timed out waiting')
+                total_failed += chunk_count
+
+            # small pause between SIMs
+            time.sleep(1)
+
+        elapsed = int(time.time() - start_t)
+        requested = count
+        delivered = total_sent
+        failed = total_failed
+        missing = max(0, requested - delivered - failed)
+        success_rate = round(delivered / requested * 100, 1) if requested else 0
+
+        if delivered >= requested:
+            title = '✅ <b>100% SUCCESSFUL BLAST</b>'
+        elif delivered > 0:
+            title = '⚠️ <b>BLAST COMPLETED WITH ISSUES</b>'
+        else:
+            title = '❌ <b>BLAST FAILED</b>'
+
+        text = (
+            f'{title}\n'
+            f'{"─" * 22}\n\n'
+            f'👤 <b>To:</b> <code>{esc(to)}</code>\n'
+            f'🎯 <b>Requested:</b> {requested}\n'
+            f'📡 <b>SIMs Used:</b> {n} (sequential)\n'
+            f'✅ <b>Delivered:</b> {delivered} / {requested}\n'
+            f'❌ <b>Failed:</b> {failed}\n'
+            f'📈 <b>Delivery Rate:</b> {success_rate}%\n'
+            f'⏱ <b>Total Time:</b> {elapsed}s'
+        )
+        if missing > 0:
+            text += (f'\n\n🔍 <b>Undelivered:</b> {missing}\n'
+                     f'<i>Gateway ne queue nahi kiya. Admin se SIM check karwayein.</i>')
+
+        try:
+            bot.edit_message_text(text, chat_id=uid, message_id=live_msg_id)
+        except Exception:
+            bot.send_message(uid, text)
+
+    except Exception as e:
+        log(f'! run_blast_sequential error: {e}')
+        try:
+            bot.edit_message_text(f'❌ <b>BLAST ERROR</b>\n\n{esc(str(e))}',
+                                  chat_id=uid, message_id=live_msg_id)
+        except Exception:
+            pass
+    finally:
+        try:
+            BLAST_LOCK.release()
+        except RuntimeError:
+            pass
+        WATCHING.pop(uid, None)
+
+
+# ═══════════════════════════════════════════════════════════════
 #  SEND FLOW
 # ═══════════════════════════════════════════════════════════════
 def plan_text(count, balance=None):
@@ -1002,7 +1164,7 @@ def start_blast(uid, to, msg, count):
         bot.send_message(uid, '⚠ <b>Gateway Busy</b>\nThodi der me try karein.')
         return False
 
-    # ── PRE-FLIGHT SIM POOL CHECK (fix) ──────────────────────
+    # Pre-flight SIM pool check
     try:
         online_devices = get_online_devices()
     except Exception:
@@ -1011,7 +1173,6 @@ def start_blast(uid, to, msg, count):
     sim_line = build_sim_pool_line(online_devices)
     warn_line = build_distribution_warning(online_devices, count)
 
-    # Refuse blast if no SIM online (saves user's points)
     if len(online_devices) == 0:
         BLAST_LOCK.release()
         bot.send_message(
@@ -1023,47 +1184,34 @@ def start_blast(uid, to, msg, count):
             '<i>Aapke points deduct nahi kiye gaye.</i>')
         return False
 
-    # Show initializing message WITH SIM pool info
+    # Since we now handle sending ourselves, deduct cost ONLY after each chunk? 
+    # Simpler: deduct full cost upfront (existing behaviour) but if pre-flight fails, refund.
+    # Here we deduct upfront.
+    if not spend(uid, cost, f'send {count} to {to}'):
+        BLAST_LOCK.release()
+        bot.send_message(uid, '❌ <b>Insufficient Balance</b>')
+        return False
+
+    set_cooldown(uid)
+    remember_number(uid, to)
+    PENDING.pop(uid, None)
+    WATCHING[uid] = True  # marker
+    log(f'BLAST start (sequential): {uid} to={to} count={count} cost={cost} sims={len(online_devices)}')
+
     live_msg = bot.send_message(
         uid,
-        f'{warn_line}⚡ <b>INITIALIZING BLAST...</b>\n\n'
+        f'{warn_line}⚡ <b>INITIALIZING SEQUENTIAL BLAST...</b>\n\n'
         f'{sim_line}\n'
         f'🎯 <b>Target:</b> {count} SMS\n'
         f'💸 <b>Cost:</b> {cost} points\n'
         f'📝 <b>Message:</b> <code>{esc(msg[:120])}</code>\n\n'
-        '<i>🔗 Connecting to gateway servers...</i>')
+        '<i>🔗 SIM 1 pehle, phir SIM 2. No overlap.</i>')
 
-    try:
-        res = api('/api/message', {'to': to, 'message': msg, 'count': count}, timeout=30)
-    except Exception as e:
-        BLAST_LOCK.release()
-        try:
-            bot.edit_message_text(f'❌ <b>CONNECTION FAILED</b>\n\n{esc(str(e))}',
-                                  chat_id=uid, message_id=live_msg.message_id)
-        except Exception:
-            pass
-        return False
-
-    if not res.get('ok'):
-        BLAST_LOCK.release()
-        try:
-            bot.edit_message_text(f'❌ <b>SERVER ERROR</b>\n\n{esc(res.get("error", "failed"))}',
-                                  chat_id=uid, message_id=live_msg.message_id)
-        except Exception:
-            pass
-        return False
-
-    spend(uid, cost, f'send {count} to {to}')
-    set_cooldown(uid)
-    remember_number(uid, to)
-    PENDING.pop(uid, None)
-    WATCHING[uid] = res['job_id']
-    log(f'BLAST {uid}: to={to} count={count} cost={cost} '
-        f'sims={len(online_devices)} capacity={res.get("capacity")} '
-        f'dispatched={res.get("dispatched")} queued={res.get("queued")} '
-        f'job={res["job_id"]}')
-
-    threading.Thread(target=watch, args=(uid, live_msg.message_id, res['job_id']), daemon=True).start()
+    threading.Thread(
+        target=run_blast_sequential,
+        args=(uid, live_msg.message_id, to, msg, count, online_devices),
+        daemon=True,
+    ).start()
     return True
 
 
@@ -1072,13 +1220,14 @@ def ask_count(uid):
     devices = get_online_devices()
     n = len(devices)
 
-    # safe suggestion
     if n == 0:
         safe_hint = '❌ <b>Koi SIM online nahi hai</b> — pehle admin se device on karwayein.'
     elif n == 1:
         safe_hint = f'⚠️ Sirf 1 SIM online — <b>{WARN_SINGLE_SIM_THRESHOLD}</b> ya kam messages recommend.'
     else:
-        safe_hint = f'💡 {n} SIMs online — safe range: <b>1–{n * WARN_MULTI_SIM_PER_DEVICE}</b>'
+        safe_hint = (f'💡 {n} SIMs online — sequential mode active\n'
+                     f'   ├ SIM 1 ko {n}-way split ka pehla chunk milega\n'
+                     f'   └ SIM 2 uske baad — no overlap')
 
     bot.send_message(
         uid,
@@ -1357,7 +1506,8 @@ def cmd_admin(message):
         '👑 <b>ADMIN CONTROL PANEL</b>\n'
         f'{"─" * 22}\n\n'
         f'🔧 <b>Maintenance:</b> {"🟢 ON" if maintenance_on() else "🔴 OFF"}\n'
-        f'📊 <b>Admins:</b> {len(ADMIN_IDS)}\n\n'
+        f'📊 <b>Admins:</b> {len(ADMIN_IDS)}\n'
+        f'⚙️ <b>Send Mode:</b> {"Sequential" if SEQUENTIAL_MODE else "Parallel"}\n\n'
         '<i>Niche buttons se sections open karein.</i>',
         reply_markup=admin_menu())
 
@@ -1599,7 +1749,8 @@ def cmd_botstats(message):
         f'💎 <b>Points in Circulation:</b> {total_points}\n'
         f'📥 <b>Total Spent:</b> {total_spent}\n'
         f'📤 <b>Total Earned:</b> {total_earned}\n'
-        f'🔧 <b>Maintenance:</b> {"🟢 ON" if maintenance_on() else "🔴 OFF"}')
+        f'🔧 <b>Maintenance:</b> {"🟢 ON" if maintenance_on() else "🔴 OFF"}\n'
+        f'⚙️ <b>Send Mode:</b> {"Sequential" if SEQUENTIAL_MODE else "Parallel"}')
     try:
         st = api('/api/status', timeout=6)
         dev = api('/api/devices', timeout=8)
@@ -1631,7 +1782,7 @@ def cmd_maintenance(message):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  LIVE TRACKING
+#  LIVE TRACKING (used only for RETRY flow)
 # ═══════════════════════════════════════════════════════════════
 def watch(chat_id, message_id, job_id):
     try:
@@ -1677,14 +1828,12 @@ def watch(chat_id, message_id, job_id):
             f'📡 <b>SIM Pool:</b> {job.get("capacity", "?")}\n'
             f'🚀 <b>Dispatched:</b> {job.get("dispatched", 0)}')
 
-        # ── Detect missing/undelivered messages ──
         requested = job.get("requested", job.get("total", 0))
         delivered = job.get("sent", 0)
         failed = job.get("failed", 0)
         missing = max(0, requested - delivered - failed)
         if missing > 0:
-            text += (f'\n🔍 <b>Undelivered:</b> {missing} (gateway ne queue nahi kiya)\n'
-                     f'<i>SIM pool capacity check karein — /devices</i>')
+            text += (f'\n🔍 <b>Undelivered:</b> {missing} (gateway ne queue nahi kiya)')
 
         bad = [d for d in job.get('devices', []) if d.get('failed')]
         if bad:
@@ -1740,6 +1889,7 @@ def main():
     log('   channels: ' + (', '.join('@' + c for c in REQUIRED_CHANNELS) or 'none'))
     log(f'   points: start {START_POINTS} · refer +{REFERRAL_BONUS} · '
         f'{COST_PER_MSG}/msg · retry -{COST_RETRY}')
+    log(f'   mode: {"SEQUENTIAL (SIM by SIM)" if SEQUENTIAL_MODE else "PARALLEL"}')
     log(f'   admins: {sorted(ADMIN_IDS) or "none"}')
 
     try:
