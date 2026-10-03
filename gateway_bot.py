@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Gateway Bot — Premium Telegram console for your SMS gateway.
-Sequential dispatch · Hinglish HUD · Full Admin Toolkit · Streak Rewards
+Smart Parallel Dispatch · Hinglish HUD · Full Admin Toolkit · Streak Rewards
 """
 import json
 import os
@@ -35,7 +35,7 @@ DAILY_BONUS = 5
 MAX_STREAK_BONUS = 20
 
 COOLDOWN = 3
-TICK = 1.0
+TICK = 0.8
 MAX_COUNT = 2000
 
 BAR, EMPTY, BAR_LEN = '▰', '▱', 14
@@ -155,7 +155,6 @@ def api(path, payload=None, timeout=15):
 
 
 def get_online_devices():
-    """Return list of online devices from gateway."""
     try:
         res = api('/api/devices', timeout=10)
         if not res.get('ok'):
@@ -381,6 +380,8 @@ def live_text(j):
     failed = j.get('failed', 0)
     remaining = j.get('remaining', 0)
     percent = j.get('percent') or 0
+    rate = j.get('rate', 0)
+    elapsed = j.get('elapsed', 0)
     return (
         '⚡ <b>BLAST IN PROGRESS</b>\n'
         f'{"─" * 22}\n\n'
@@ -390,9 +391,9 @@ def live_text(j):
         f'✅ <b>Delivered:</b> {sent}\n'
         f'❌ <b>Failed:</b> {failed}\n'
         f'⏳ <b>Remaining:</b> {remaining}\n'
-        f'⚡ <b>Speed:</b> {j.get("rate", 0)}/s\n'
-        f'⏱ <b>Elapsed:</b> {j.get("elapsed", 0)}s\n\n'
-        '<i>🔄 Sequential — SIM by SIM, koi overlap nahi.</i>'
+        f'⚡ <b>Speed:</b> {rate}/s\n'
+        f'⏱ <b>Elapsed:</b> {elapsed}s\n\n'
+        '<i>🔄 Parallel across devices, no overlap.</i>'
     )
 
 
@@ -423,9 +424,8 @@ def failure_text(j):
         return '✅ <b>Perfect Delivery!</b>\nKoi failures nahi mile.'
     out = [f'❌ <b>Failure Report</b> — {len(bad)} device(s) impacted', '']
     for d in bad:
-        out.append(f'{"🟢" if d["status"] else "🔴"} <b>{esc(d["name"])}</b>  <code>{esc(d["id"][:18])}</code>')
-        batt = d.get('batteryPercent')
-        out.append(f'   ↳ ❌ {d["failed"]} fails | ✅ {d["sent"]} sent | 🔋 {batt if batt is not None else "—"}%')
+        out.append(f'{"🟢" if d["status"] else "🔴"} <b>{esc(d["name"])}</b>')
+        out.append(f'   ↳ ❌ {d["failed"]} fails | ✅ {d["sent"]} sent')
     out += ['', '<i>Offline devices automatically fail. Turn them on and use /retry.</i>']
     return '\n'.join(out)
 
@@ -438,7 +438,6 @@ def devices_text(devices):
     for d in devices[:25]:
         batt = d.get('batteryPercent')
         out += [f'{"🟢" if d["status"] else "🔴"} <b>{esc(d["name"])}</b>',
-                f'   ├ ID: <code>{esc(d["id"][:18])}</code>',
                 f'   ├ Model: {esc(d.get("model", "—"))}',
                 f'   └ 📞 {esc(d.get("phoneNumber", "—"))} | 🔋 {batt if batt is not None else "—"}%', '']
     if len(devices) > 25:
@@ -729,7 +728,7 @@ def cmd_affords(message):
     if n == 0:
         sim_note = '\n\n❌ <b>No device online</b> — blast kaam nahi karega.'
     else:
-        sim_note = f'\n\n💡 <b>{n} device(s)</b> online — blast sequential chalega.'
+        sim_note = f'\n\n💡 <b>{n} device(s)</b> online — parallel blast chalega.'
 
     kb = types.InlineKeyboardMarkup(row_width=1)
     if can_send > 0 and n > 0:
@@ -771,7 +770,7 @@ def cmd_status(message):
 
     devices = dev.get('devices') or []
     online = sum(1 for d in devices if d.get('status'))
-    mode = st.get('mode', 'sequential')
+    mode = st.get('mode', 'smart_parallel')
     interval = st.get('send_interval', '—')
     sims_per = st.get('sims_per_device', '—')
 
@@ -780,7 +779,7 @@ def cmd_status(message):
         '─' * 22, '',
         '🔥 <b>Firebase:</b> ✅ Connected',
         f'📱 <b>Devices:</b> {len(devices)} (🟢 {online} Online)',
-        f'⚙️ <b>Mode:</b> {esc(str(mode).title())}',
+        f'⚙️ <b>Mode:</b> {esc(str(mode).replace("_", " ").title())}',
         f'⏱ <b>Interval:</b> {esc(str(interval))}s',
         f'📶 <b>SIM/Device:</b> {esc(str(sims_per))}',
     ]
@@ -950,7 +949,7 @@ def plan_text(count, balance=None):
 
 
 def estimate_time(count, devices):
-    """Estimate blast time based on sequential mode."""
+    """Estimate blast time based on smart parallel mode."""
     if not devices:
         return None
     try:
@@ -958,7 +957,10 @@ def estimate_time(count, devices):
         interval = float(st.get('send_interval', 2.0))
     except Exception:
         interval = 2.0
-    return int(count * interval)
+    n = len(devices)
+    # Each device handles count/n messages, with interval gap
+    per_dev = max(1, (count + n - 1) // n)
+    return int(per_dev * interval)
 
 
 def start_blast(uid, to, msg, count):
@@ -990,7 +992,6 @@ def start_blast(uid, to, msg, count):
         bot.send_message(uid, '⚠ <b>Gateway Busy</b>\nThodi der me try karein.')
         return False
 
-    # Pre-flight SIM pool check
     try:
         online_devices = get_online_devices()
     except Exception:
@@ -1012,13 +1013,13 @@ def start_blast(uid, to, msg, count):
 
     live_msg = bot.send_message(
         uid,
-        '⚡ <b>INITIALIZING SEQUENTIAL BLAST...</b>\n\n'
+        '⚡ <b>INITIALIZING BLAST...</b>\n\n'
         f'{sim_line}\n'
         f'🎯 <b>Target:</b> {count} messages\n'
         f'💸 <b>Cost:</b> {cost} points\n'
         f'⏱ <b>Est. Time:</b> ~{est}s\n'
         f'📝 <b>Message:</b> <code>{esc(msg[:120])}</code>\n\n'
-        '<i>🔗 SIM by SIM dispatch, koi overlap nahi.</i>')
+        '<i>🔗 Connecting to gateway servers...</i>')
 
     try:
         res = api('/api/message', {'to': to, 'message': msg, 'count': count}, timeout=30)
@@ -1067,8 +1068,8 @@ def ask_count(uid):
         safe_hint = '❌ <b>Koi device online nahi hai</b> — pehle admin se device on karwayein.'
     else:
         safe_hint = (f'💡 <b>{n} device(s) online</b>\n'
-                     f'   ⏱ Har msg ke beech ~{int(interval)}s\n'
-                     f'   🔄 Sequential round-robin')
+                     f'   ⏱ Interval: ~{interval}s per device\n'
+                     f'   🔄 Parallel across devices')
 
     bot.send_message(
         uid,
@@ -1352,7 +1353,7 @@ def cmd_admin(message):
         f'{"─" * 22}\n\n'
         f'🔧 <b>Maintenance:</b> {"🟢 ON" if maintenance_on() else "🔴 OFF"}\n'
         f'📊 <b>Admins:</b> {len(ADMIN_IDS)}\n'
-        f'⚙️ <b>Gateway Mode:</b> Sequential\n\n'
+        f'⚙️ <b>Gateway Mode:</b> Smart Parallel\n\n'
         '<i>Niche buttons se sections open karein.</i>',
         reply_markup=admin_menu())
 
@@ -1606,7 +1607,7 @@ def cmd_botstats(message):
             f'{"─" * 22}\n\n'
             f'🔥 <b>Firebase:</b> {"✅" if st.get("configured") else "❌"}\n'
             f'📱 <b>Devices:</b> {len(devices)} (🟢 {online})\n'
-            f'⚙️ <b>Mode:</b> {esc(str(st.get("mode", "sequential")).title())}\n'
+            f'⚙️ <b>Mode:</b> {esc(str(st.get("mode", "smart_parallel")).replace("_", " ").title())}\n'
             f'⏱ <b>Interval:</b> {esc(str(st.get("send_interval", "—")))}s')
     except Exception:
         pass
@@ -1630,10 +1631,10 @@ def cmd_maintenance(message):
 #  LIVE TRACKING
 # ═══════════════════════════════════════════════════════════════
 def watch(chat_id, message_id, job_id):
-    """Poll /api/delivery until job complete. Sequential mode me queue nahi hota."""
+    """Poll /api/delivery until job complete. No per-device display."""
     try:
         last_text = None
-        for _ in range(1800):  # 30 min max (sequential slow hota hai)
+        for _ in range(1800):  # 30 min max
             try:
                 job = (api(f'/api/delivery?job={job_id}', timeout=10) or {}).get('job')
             except GatewayError:
@@ -1670,29 +1671,12 @@ def watch(chat_id, message_id, job_id):
 
         text = done_text(job, title)
 
-        # Per-device summary (max 5)
-        devices = job.get('devices') or []
-        if devices:
-            active_devs = [d for d in devices if d.get('total', 0) > 0]
-            if active_devs:
-                text += '\n\n📊 <b>Per Device:</b>'
-                for d in active_devs[:5]:
-                    icon = '🟢' if d.get('sent', 0) > 0 else '🔴'
-                    text += f'\n   {icon} {esc(d["name"][:18])}: {d.get("sent", 0)}✅ / {d.get("failed", 0)}❌'
-                if len(active_devs) > 5:
-                    text += f'\n   <i>...and {len(active_devs) - 5} more</i>'
-
-        bad = [d for d in devices if d.get('failed')]
-        if bad:
-            text += '\n\n❌ <b>Failed On:</b> ' + ', '.join(esc(d['name']) for d in bad[:5])
-
         kb = None
         if job.get('failed_tasks'):
             kb = types.InlineKeyboardMarkup(row_width=1)
             kb.add(types.InlineKeyboardButton(
                 f'🔁 Retry {job["failed_tasks"]} ({COST_RETRY} pts)',
                 callback_data='retry_all'))
-            kb.add(types.InlineKeyboardButton('📊 View Failure Log', callback_data='show_failed'))
 
         try:
             bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
@@ -1743,7 +1727,7 @@ def main():
     try:
         probe = api('/api/status', timeout=6)
         if isinstance(probe, dict):
-            mode = probe.get('mode', 'sequential')
+            mode = probe.get('mode', 'smart_parallel')
             interval = probe.get('send_interval', '—')
             log(f'✅ Gateway reachable · mode={mode} · interval={interval}s')
         else:
