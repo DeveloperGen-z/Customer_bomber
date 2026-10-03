@@ -1,0 +1,2304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <meta http-equiv="Cache-Control" content="no-store" />
+    <title>Message Gateway — Aurora Console</title>
+    <!-- v7 · premium command-console dispatch UI · studio chrome (hard-refresh after replacing) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+        /* ============================================================
+           Message Gateway — "Aurora Glass" v7
+           Sections: Firebase Setup → Send Message → Logs
+             (+ Connected Devices section kept in DOM but hidden;
+              remove style="display:none" on it to bring the list back)
+           v7 changes:
+             · LIVE DISPATCH CONSOLE: dark command surface with an honest
+               3-phase bar (connecting → sending → delivered) that mirrors
+               the server terminal; label + counter + bar share ONE value,
+               so "✔ 0 / 1344 with an empty bar" can never happen again
+             · pre-answer phase is an INDETERMINATE sweep, not a fake 0%
+             · status dot, sheen on the fill, metric chips, copy-to-clipboard
+               on the recipient, elapsed-time completion line
+             · studio chrome: rotating logo halo, endpoint cmd-chips on every
+               card, tinted glass ring, busy-spinner dispatch button,
+               third "Sent" stat wired to the live session counter
+             · v6 SCROLL/RENDER PERF work fully preserved (no blur, no mask,
+               translate-only aurora, rAF-throttled scroll, containment)
+           ============================================================ */
+        html { font-size: 100%; }
+        :root {
+            --ink: #16121F;
+            --ink-2: #544D66;
+            --ink-3: #8E86A3;
+            --card: rgba(255, 255, 255, 0.8);
+            --field: rgba(255, 255, 255, 0.78);
+            --line: rgba(120, 90, 190, 0.14);
+            --line-2: rgba(120, 90, 190, 0.22);
+            --violet: #7C3AED;
+            --pink: #DB2777;
+            --pink-hi: #EC4899;
+            --grad: linear-gradient(93deg, #A855F7 0%, #EC4899 52%, #F97362 100%);
+            --grad-btn: linear-gradient(93deg, #C026D3 0%, #DB2777 55%, #F97362 100%);
+            --violet-soft: rgba(124, 58, 237, 0.10);
+            --green: #0F9D58;
+            --green-ink: #0B7A44;
+            --green-soft: rgba(15, 157, 88, 0.10);
+            --amber: #D97706;
+            --amber-soft: rgba(217, 119, 6, 0.11);
+            --red: #E11D48;
+            --red-soft: rgba(225, 29, 72, 0.09);
+            --indigo: #6366F1;
+            --console: #17121F;
+            --font-h: "Sora", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --font-b: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --font-m: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+            --ease: cubic-bezier(0.22, 1, 0.36, 1);
+            --shadow-card: 0 2px 8px rgba(80, 50, 140, 0.05), 0 24px 56px -28px rgba(80, 50, 140, 0.32);
+            --shadow-card-hover: 0 4px 12px rgba(80, 50, 140, 0.06), 0 32px 68px -30px rgba(80, 50, 140, 0.42);
+            /* PERF: glass blur tokens — zeroed on touch devices (see PERF block).
+               backdrop-filter is the #1 cause of scroll jank, so it must be
+               able to be switched off wholesale in one place. */
+            --glass-blur: blur(18px) saturate(1.25);
+            --bar-blur: blur(14px) saturate(1.3);
+            /* Type scale — relative (rem) so mobile root scaling works */
+            --fs-xs: 0.6875rem;   /* 11px */
+            --fs-sm: 0.78125rem;  /* 12.5px */
+            --fs-base: 0.90625rem;/* 14.5px */
+            --fs-md: 1rem;        /* 16px */
+            --fs-lg: 1.1875rem;   /* 19px */
+            --fs-xl: 1.5rem;      /* 24px */
+            --fs-hero: clamp(1.75rem, 4.6vw + 0.6rem, 2.5rem); /* 28→40px, scales with viewport */
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: var(--font-b);
+            font-size: var(--fs-base);
+            color: var(--ink);
+            min-height: 100vh;
+            letter-spacing: -0.008em;
+            -webkit-font-smoothing: antialiased;
+            overflow-x: hidden;
+        }
+
+        /* ---------- Aurora mesh scene (NO filter:blur — gradient falloff only) ---------- */
+        .scene { position: fixed; inset: 0; z-index: -2; background: linear-gradient(165deg, #F5F0FE 0%, #FDEFF7 55%, #FFF3EC 100%); overflow: hidden; }
+        .blob { position: absolute; border-radius: 50%; will-change: transform; contain: layout paint; }
+        .blob.b1 { width: 760px; height: 760px; top: -300px; left: -240px; background: radial-gradient(circle, rgba(168, 85, 247, 0.22) 0%, rgba(168, 85, 247, 0.10) 34%, transparent 62%); animation: drift 34s ease-in-out infinite; }
+        .blob.b2 { width: 700px; height: 700px; top: -260px; right: -260px; background: radial-gradient(circle, rgba(236, 72, 153, 0.18) 0%, rgba(236, 72, 153, 0.08) 34%, transparent 62%); animation: drift 39s ease-in-out infinite reverse; }
+        .blob.b3 { width: 820px; height: 820px; bottom: -400px; left: 22%; background: radial-gradient(circle, rgba(249, 115, 98, 0.16) 0%, rgba(249, 115, 98, 0.07) 36%, transparent 64%); animation: drift 46s ease-in-out infinite; animation-delay: -16s; }
+        .blob.b4 { width: 620px; height: 620px; bottom: 4%; right: -200px; background: radial-gradient(circle, rgba(96, 165, 250, 0.15) 0%, rgba(96, 165, 250, 0.06) 36%, transparent 64%); }
+        /* PERF: translate-ONLY. Animating scale() forces a full re-raster of a
+           ~900px layer every frame — the single biggest repaint cost here. */
+        @keyframes drift {
+            0%, 100% { transform: translate3d(0, 0, 0); }
+            50% { transform: translate3d(34px, 22px, 0); }
+        }
+        .scene::after {
+            content: "";
+            position: absolute; inset: 0;
+            background:
+                radial-gradient(ellipse 85% 55% at 50% 0%, rgba(255, 255, 255, 0.55), transparent 70%),
+                radial-gradient(rgba(124, 58, 237, 0.05) 1px, transparent 1px);
+            background-size: auto, 26px 26px;
+        }
+        /* cursor spotlight — transform-composited, desktop only */
+        .spotlight {
+            position: fixed; top: 0; left: 0; z-index: -1;
+            width: 880px; height: 880px;
+            margin: -440px 0 0 -440px;
+            border-radius: 50%;
+            pointer-events: none;
+            background: radial-gradient(circle, rgba(168, 85, 247, 0.10) 0%, rgba(168, 85, 247, 0.045) 38%, transparent 66%);
+            opacity: 0;
+            transition: opacity 0.5s ease;
+            will-change: transform;
+        }
+        @media (pointer: coarse), (hover: none) {
+            .spotlight { display: none; }
+        }
+        ::selection { background: rgba(219, 39, 119, 0.22); }
+
+        /* ---------- Top bar ---------- */
+        .topbar {
+            position: sticky; top: 0; z-index: 50;
+            backdrop-filter: var(--bar-blur);
+            -webkit-backdrop-filter: var(--bar-blur);
+            background: rgba(255, 255, 255, 0.78);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.85);
+            box-shadow: 0 8px 30px -18px rgba(80, 50, 140, 0.25);
+        }
+        .topbar::after {
+            content: "";
+            position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(168, 85, 247, 0.5), rgba(236, 72, 153, 0.5), transparent);
+            pointer-events: none;
+        }
+        .topbar-inner {
+            max-width: 1060px; margin: 0 auto;
+            height: 58px; padding: 0 20px;
+            display: flex; align-items: center; gap: 11px;
+        }
+        .logo {
+            position: relative;
+            isolation: isolate;   /* keeps the rotating halo behind the glyph */
+            width: 38px; height: 38px; flex-shrink: 0;
+            display: grid; place-items: center;
+            border-radius: 12px;
+            background: var(--grad);
+            color: #fff; font-family: var(--font-h); font-weight: 800; font-size: 1.0625rem;
+            box-shadow: 0 10px 20px -8px rgba(219, 39, 119, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+        }
+        /* slowly rotating conic halo — transform-only, 44px layer, negligible cost */
+        .logo::before {
+            content: "";
+            position: absolute; inset: -3px; z-index: -1;
+            border-radius: 15px;
+            background: conic-gradient(from 0deg,
+                rgba(168, 85, 247, 0) 0deg,
+                rgba(236, 72, 153, 0.6) 90deg,
+                rgba(249, 115, 98, 0.5) 160deg,
+                rgba(168, 85, 247, 0) 270deg);
+            animation: spin 9s linear infinite;
+        }
+        .brand { flex: 1; min-width: 0; }
+        .brand strong { display: block; font-family: var(--font-h); font-size: 1.0625rem; font-weight: 800; letter-spacing: -0.025em; line-height: 1.2; }
+        .brand strong span { background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+        .brand small { display: block; font-size: 0.6875rem; color: var(--ink-3); font-weight: 500; margin-top: 1px; }
+        .online-pill {
+            display: inline-flex; align-items: center; gap: 7px;
+            font-size: 0.75rem; font-weight: 700; color: var(--green-ink);
+            background: var(--green-soft);
+            border: 1px solid rgba(15, 157, 88, 0.2);
+            padding: 6px 12px; border-radius: 999px;
+            white-space: nowrap;
+        }
+        .online-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 2.2s infinite; }
+        .online-pill.warn { color: #9A5B04; background: var(--amber-soft); border-color: rgba(217, 119, 6, 0.25); }
+        .online-pill.warn .dot { background: var(--amber); animation: none; }
+        .online-pill.err { color: var(--red); background: var(--red-soft); border-color: rgba(225, 29, 72, 0.22); }
+        .online-pill.err .dot { background: var(--red); animation: none; }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(15, 157, 88, 0.4); }
+            50% { box-shadow: 0 0 0 6px rgba(15, 157, 88, 0); }
+        }
+
+        /* ---------- Layout ---------- */
+        .wrap { position: relative; z-index: 1; max-width: 1060px; margin: 0 auto; padding: 34px 24px 56px; }
+
+        .pagehead { margin-bottom: 26px; }
+        .pagehead .overline {
+            display: inline-flex; align-items: center; gap: 10px;
+            font-family: var(--font-m); font-size: var(--fs-xs); font-weight: 600;
+            letter-spacing: 0.22em; text-transform: uppercase;
+            color: var(--violet);
+        }
+        .pagehead .overline::after { content: ""; width: 42px; height: 1.5px; background: linear-gradient(90deg, var(--pink-hi), transparent); }
+        .pagehead h1 {
+            margin-top: 12px;
+            font-family: var(--font-h);
+            font-size: var(--fs-hero);
+            font-weight: 800; letter-spacing: -0.03em; line-height: 1.14;
+            overflow-wrap: break-word;
+        }
+        .pagehead h1 em {
+            font-style: normal;
+            background: var(--grad);
+            -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .pagehead p { margin-top: 10px; font-size: var(--fs-md); color: var(--ink-2); max-width: 58ch; line-height: 1.6; }
+
+        /* Two stats only (Devices · Online) — compact premium chips, not tall tiles */
+        .stats-row { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+        .stat {
+            display: inline-flex; align-items: center; gap: 8px;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(255, 255, 255, 0.74));
+            backdrop-filter: var(--glass-blur);
+            -webkit-backdrop-filter: var(--glass-blur);
+            border: 1px solid rgba(255, 255, 255, 0.9);
+            border-radius: 999px;
+            padding: 5px 15px 5px 6px;
+            box-shadow: 0 8px 20px -14px rgba(80, 50, 140, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+            transition: transform 0.35s var(--ease);
+        }
+        .stat .sicon {
+            width: 28px; height: 28px; flex-shrink: 0;
+            display: grid; place-items: center;
+            border-radius: 50%; color: #fff;
+        }
+        .stat .sicon svg { width: 15px; height: 15px; }
+        .stat.s-indigo .sicon { background: linear-gradient(135deg, #818CF8, #6366F1); box-shadow: 0 6px 14px -6px rgba(99, 102, 241, 0.65); }
+        .stat.s-green  .sicon { background: linear-gradient(135deg, #34D399, #0F9D58); box-shadow: 0 6px 14px -6px rgba(15, 157, 88, 0.65); }
+        .stat.s-amber .sicon { background: linear-gradient(135deg, #FBBF24, #D97706); box-shadow: 0 6px 14px -6px rgba(217, 119, 6, 0.65); }
+        .stat .sk { font-size: 0.625rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); }
+        .stat .sv { font-family: var(--font-h); font-size: 1.0625rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+        .s-indigo .sv { color: #4F46E5; }
+        .s-green  .sv { color: var(--green-ink); }
+        .s-amber  .sv { color: #B45309; }
+
+        /* ---------- Glass cards ---------- */
+        .card {
+            position: relative;
+            contain: layout style;   /* PERF: scrolling can't invalidate sibling cards */
+            background: var(--card);
+            backdrop-filter: var(--glass-blur);
+            -webkit-backdrop-filter: var(--glass-blur);
+            border: 1px solid rgba(255, 255, 255, 0.9);
+            border-radius: 24px;
+            padding: 22px;
+            box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.07), var(--shadow-card);   /* tinted glass ring */
+            transition: transform 0.45s var(--ease), box-shadow 0.45s var(--ease), border-color 0.45s var(--ease);
+        }
+        .card::before {
+            content: "";
+            position: absolute; inset: 0 0 auto 0; height: 1px;
+            border-radius: 24px 24px 0 0;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.95), transparent);
+            pointer-events: none;
+        }
+        .card:hover { transform: translateY(-3px); border-color: rgba(255, 255, 255, 1); box-shadow: 0 0 0 1px rgba(236, 72, 153, 0.12), var(--shadow-card-hover); }
+        .card + .card { margin-top: 16px; }
+
+        .card-head { display: flex; align-items: center; gap: 13px; margin-bottom: 16px; flex-wrap: wrap; }
+        .card-head.row { justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+        .card-head-l { display: flex; align-items: center; gap: 13px; min-width: 0; }
+        .card-icon {
+            width: 42px; height: 42px; flex-shrink: 0;
+            display: grid; place-items: center;
+            border-radius: 14px; color: #fff;
+            position: relative;
+        }
+        .card-icon svg { width: 20px; height: 20px; }
+        .card-icon::after {
+            content: "";
+            position: absolute; inset: 0; border-radius: 14px;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.35), transparent 55%);
+            pointer-events: none;
+        }
+        .card-icon.db   { background: linear-gradient(135deg, #A855F7, #7C3AED); box-shadow: 0 10px 22px -9px rgba(124, 58, 237, 0.55); }
+        .card-icon.chat { background: linear-gradient(135deg, #EC4899, #DB2777); box-shadow: 0 10px 22px -9px rgba(219, 39, 119, 0.55); }
+        .card-icon.ph   { background: linear-gradient(135deg, #34D399, #0F9D58); box-shadow: 0 10px 22px -9px rgba(15, 157, 88, 0.55); }
+        .card-icon.term { background: linear-gradient(135deg, #FB7185, #F43F5E); box-shadow: 0 10px 22px -9px rgba(244, 63, 94, 0.55); }
+        .card-head h2 { font-family: var(--font-h); font-size: 1.0625rem; font-weight: 800; letter-spacing: -0.02em; line-height: 1.2; }
+        .card-head p { font-size: 0.75rem; color: var(--ink-3); margin-top: 2px; line-height: 1.4; }
+
+        /* Endpoint badge — the "which API does this card call" affordance */
+        .cmd-chip {
+            display: inline-flex; align-items: center; gap: 7px;
+            flex-shrink: 0;
+            padding: 5px 11px; border-radius: 999px;
+            background: rgba(124, 58, 237, 0.07);
+            border: 1px solid rgba(124, 58, 237, 0.16);
+            font-family: var(--font-m); font-size: 0.65625rem; font-weight: 600;
+            color: var(--violet); letter-spacing: 0.02em; white-space: nowrap;
+        }
+        .cmd-chip::before {
+            content: "";
+            width: 6px; height: 6px; border-radius: 50%;
+            background: var(--pink-hi);
+            box-shadow: 0 0 0 3px rgba(236, 72, 153, 0.14);
+        }
+
+        .pill {
+            display: inline-flex; align-items: center; gap: 7px;
+            font-size: 0.75rem; font-weight: 700;
+            padding: 6px 12px; border-radius: 999px;
+            white-space: nowrap;
+        }
+        .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+        .pill.green { color: var(--green-ink); background: var(--green-soft); }
+        .pill.amber { color: #9A5B04; background: var(--amber-soft); }
+        .pill.red   { color: var(--red); background: var(--red-soft); }
+
+        /* ---------- Fields ---------- */
+        .field { margin-bottom: 17px; }
+        .field:last-child { margin-bottom: 0; }
+        label {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 0.84375rem; font-weight: 700; color: var(--ink);
+            margin-bottom: 9px;
+        }
+        label svg { color: var(--violet); flex-shrink: 0; }
+        .input-wrap { position: relative; }
+        input, textarea {
+            width: 100%;
+            background: var(--field);
+            border: 1.5px solid var(--line-2);
+            border-radius: 15px;
+            padding: 13px 15px;
+            color: var(--ink);
+            font: inherit; font-size: var(--fs-base);
+            transition: border-color 0.25s, box-shadow 0.25s, background 0.25s;
+        }
+        input::placeholder, textarea::placeholder { color: var(--ink-3); }
+        input:hover, textarea:hover { border-color: rgba(124, 58, 237, 0.35); }
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: var(--pink-hi);
+            background: #fff;
+            box-shadow: 0 0 0 4px rgba(236, 72, 153, 0.13), 0 8px 24px -12px rgba(219, 39, 119, 0.35);
+        }
+        input.invalid, textarea.invalid {
+            border-color: var(--red);
+            box-shadow: 0 0 0 4px rgba(225, 29, 72, 0.1);
+        }
+        .field-error { display: none; margin-top: 8px; font-size: var(--fs-sm); font-weight: 600; color: var(--red); }
+        .field-error.show { display: block; }
+        textarea { resize: vertical; min-height: 96px; line-height: 1.6; }
+
+        .input-check {
+            position: absolute; right: 15px; top: 50%; transform: translateY(-50%);
+            width: 25px; height: 25px; border-radius: 50%;
+            display: none; place-items: center;
+            background: var(--green); color: #fff;
+            box-shadow: 0 6px 14px -4px rgba(15, 157, 88, 0.6);
+        }
+        .input-check.show { display: grid; }
+        .eye-btn {
+            position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
+            width: 38px; height: 38px;
+            display: grid; place-items: center;
+            border: none; border-radius: 11px;
+            background: transparent; color: var(--ink-2);
+            cursor: pointer; transition: 0.2s;
+        }
+        .eye-btn:hover { background: var(--violet-soft); color: var(--violet); }
+        input.has-eye { padding-right: 54px; }
+
+        .field-foot {
+            display: flex; justify-content: space-between; gap: 10px;
+            margin-top: 7px;
+            font-size: var(--fs-xs); color: var(--ink-3);
+        }
+        .field-foot span:last-child { font-family: var(--font-m); font-variant-numeric: tabular-nums; }
+
+        /* ---------- Copies picker (1 copy = 1 message) ---------- */
+        .copy-row { display: flex; align-items: center; gap: 10px; }
+        .copy-row input {
+            width: 78px; flex-shrink: 0; text-align: center;
+            font-family: var(--font-m); font-weight: 700;
+            font-variant-numeric: tabular-nums; padding-right: 30px;
+        }
+        .copy-picks { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; }
+        .cpick {
+            padding: 8px 11px; border-radius: 10px;
+            background: rgba(255, 255, 255, 0.6);
+            border: 1px solid var(--line);
+            color: var(--ink-2); font-family: var(--font-m);
+            font-size: var(--fs-xs); font-weight: 700;
+            cursor: pointer; transition: 0.18s var(--ease);
+            font-variant-numeric: tabular-nums;
+        }
+        @media (hover: hover) and (pointer: fine) {
+            .cpick:hover { border-color: rgba(124, 58, 237, 0.35); color: var(--violet); }
+        }
+        .cpick.on {
+            background: linear-gradient(135deg, var(--violet), #A855F7);
+            border-color: transparent; color: #fff;
+            box-shadow: 0 6px 14px -6px rgba(124, 58, 237, 0.6);
+        }
+        .copy-hint {
+            margin-top: 7px; font-size: var(--fs-xs); color: var(--ink-3);
+        }
+        .copy-hint b { color: var(--ink-2); font-family: var(--font-m); }
+        .sim-toggle {
+            display: flex; gap: 6px; margin-top: 4px;
+        }
+        .sim-toggle .cpick { flex: 1; text-align: center; padding: 10px 8px; }
+        .formula {
+            margin-top: 9px; padding: 9px 11px;
+            border-radius: 11px;
+            background: rgba(124, 58, 237, 0.06);
+            border: 1px solid rgba(124, 58, 237, 0.14);
+            font-family: var(--font-m); font-size: var(--fs-xs);
+            color: var(--ink-2); line-height: 1.6;
+            font-variant-numeric: tabular-nums;
+        }
+        .formula b { color: var(--violet); }
+        .formula .fr-big { color: var(--ink); font-size: 0.84375rem; }
+
+        /* ---------- Buttons — standard height, not bulky ---------- */
+        button { font-family: inherit; cursor: pointer; }
+        .btn-row { display: grid; grid-template-columns: 1.25fr 1fr; gap: 12px; margin-top: 4px; }
+        .btn {
+            position: relative;
+            display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+            min-height: 46px;
+            padding: 12px 18px;
+            border: none; border-radius: 14px;
+            background: var(--grad-btn);
+            background-size: 160% 100%;
+            background-position: 0% 0%;
+            color: #fff;
+            font-family: var(--font-h);
+            font-size: var(--fs-base); font-weight: 700;
+            line-height: 1.2;
+            cursor: pointer;
+            transition: transform 0.3s var(--ease), box-shadow 0.3s var(--ease), background-position 0.45s var(--ease);
+            box-shadow: 0 12px 26px -10px rgba(219, 39, 119, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+            overflow: hidden;
+        }
+        .btn::after {
+            content: "";
+            position: absolute; top: 0; left: -80%;
+            width: 55%; height: 100%;
+            background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+            transform: skewX(-20deg);
+            transition: left 0.6s var(--ease);
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            background-position: 90% 0%;
+            box-shadow: 0 18px 36px -12px rgba(219, 39, 119, 0.7), 0 0 30px -10px rgba(168, 85, 247, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+        }
+        .btn:hover::after { left: 135%; }
+        .btn:active { transform: translateY(0) scale(0.99); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .btn.busy { pointer-events: none; }
+        .bspin {
+            width: 15px; height: 15px; flex-shrink: 0;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.34);
+            border-top-color: #fff;
+            animation: spin 0.7s linear infinite;
+        }
+        .btn.secondary {
+            background: rgba(255, 255, 255, 0.85);
+            border: 1.5px solid var(--line-2);
+            color: var(--ink);
+            box-shadow: 0 6px 16px -8px rgba(80, 50, 140, 0.2);
+        }
+        .btn.secondary::after { display: none; }
+        .btn.secondary:hover {
+            border-color: var(--pink-hi);
+            color: var(--pink);
+            background: #fff;
+            box-shadow: 0 12px 26px -12px rgba(219, 39, 119, 0.35);
+        }
+        .btn.sm { min-height: 38px; padding: 8px 14px; font-size: 0.8125rem; border-radius: 12px; }
+        .btn.wfull { width: 100%; }
+        .btn:focus-visible, .eye-btn:focus-visible, .icon-btn:focus-visible {
+            outline: 2.5px solid var(--pink-hi);
+            outline-offset: 2px;
+        }
+        .spinning svg { animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ═══════════════════════════════════════════════════════════
+           LIVE DISPATCH CONSOLE (v7)
+           A dark command surface that mirrors your server terminal.
+           3 honest phases — connecting (indeterminate) → sending (real
+           delivered count) → delivered / failed. Label, counter and bar
+           are all written from ONE value, so they can never disagree.
+           ═══════════════════════════════════════════════════════════ */
+        .send-progress {
+            position: relative;
+            overflow: hidden;
+            margin-top: 16px;
+            padding: 14px 15px 13px;
+            border-radius: 18px;
+            background:
+                radial-gradient(520px 150px at 12% -20%, rgba(168, 85, 247, 0.30), transparent 62%),
+                radial-gradient(420px 140px at 92% 0%, rgba(236, 72, 153, 0.18), transparent 60%),
+                linear-gradient(180deg, #1B1424 0%, #130E1B 100%);
+            border: 1px solid rgba(255, 255, 255, 0.11);
+            box-shadow: 0 20px 42px -26px rgba(28, 10, 56, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.09);
+            color: rgba(255, 255, 255, 0.86);
+            animation: bannerIn 0.4s var(--ease);
+        }
+        .send-progress[hidden] { display: none; }
+        .send-progress::before {
+            content: "";
+            position: absolute; left: 0; right: 0; top: 0; height: 1.5px;
+            background: linear-gradient(90deg, transparent, rgba(168, 85, 247, 0.95), rgba(236, 72, 153, 0.95), transparent);
+            pointer-events: none;
+        }
+        .send-progress.ok {
+            background:
+                radial-gradient(520px 150px at 12% -20%, rgba(16, 185, 129, 0.32), transparent 62%),
+                linear-gradient(180deg, #132019 0%, #0E1613 100%);
+            border-color: rgba(52, 211, 153, 0.34);
+        }
+        .send-progress.ok::before { background: linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.95), rgba(45, 212, 191, 0.9), transparent); }
+        .send-progress.err {
+            background:
+                radial-gradient(520px 150px at 12% -20%, rgba(244, 63, 94, 0.30), transparent 62%),
+                linear-gradient(180deg, #24141A 0%, #150E11 100%);
+            border-color: rgba(251, 113, 133, 0.34);
+        }
+        .send-progress.err::before { background: linear-gradient(90deg, transparent, rgba(251, 113, 133, 0.95), rgba(251, 146, 60, 0.9), transparent); }
+
+        .sp-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .sp-label { display: inline-flex; align-items: center; gap: 9px; min-width: 0; }
+        .sp-label .spdot {
+            width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%;
+            background: #C084FC;
+            animation: spPulse 1.6s ease-out infinite;
+        }
+        @keyframes spPulse {
+            0%   { box-shadow: 0 0 0 0 rgba(192, 132, 252, 0.55); }
+            70%  { box-shadow: 0 0 0 7px rgba(192, 132, 252, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(192, 132, 252, 0); }
+        }
+        .send-progress.ok  .sp-label .spdot { background: #34D399; animation: none; box-shadow: 0 0 12px rgba(52, 211, 153, 0.75); }
+        .send-progress.err .sp-label .spdot { background: #FB7185; animation: none; box-shadow: 0 0 12px rgba(251, 113, 133, 0.75); }
+        .sptxt {
+            font-size: var(--fs-sm); font-weight: 700; color: #F4EFFF;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .sp-right { display: flex; align-items: baseline; gap: 7px; flex-shrink: 0; }
+        .sp-count {
+            font-family: var(--font-m); font-size: 0.90625rem; font-weight: 700;
+            color: #E9D5FF; font-variant-numeric: tabular-nums; white-space: nowrap;
+        }
+        .sp-pct {
+            font-family: var(--font-m); font-size: 0.65625rem; font-weight: 600;
+            color: rgba(255, 255, 255, 0.4); font-variant-numeric: tabular-nums;
+            min-width: 32px; text-align: right;
+        }
+
+        .sp-track {
+            position: relative;
+            margin-top: 11px;
+            height: 11px; border-radius: 999px;
+            background: rgba(255, 255, 255, 0.07);
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+        }
+        .sp-fill {
+            position: relative;
+            display: block; height: 100%; width: 0%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, #A855F7 0%, #EC4899 52%, #FB923C 100%);
+            box-shadow: 0 0 14px rgba(192, 132, 252, 0.55);
+            transition: width 0.25s linear, background 0.45s var(--ease), box-shadow 0.45s var(--ease);
+        }
+        /* sheen riding on the fill */
+        .sp-fill::after {
+            content: "";
+            position: absolute; inset: 0;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.6), transparent);
+            background-size: 50% 100%; background-repeat: no-repeat; background-position: -70% 0;
+            animation: sheen 1.6s var(--ease) infinite;
+        }
+        @keyframes sheen { to { background-position: 170% 0; } }
+        /* pre-answer phase: an honest INDETERMINATE sweep — never a fake 0% */
+        .send-progress.connecting .sp-fill {
+            width: 34% !important;
+            background: linear-gradient(90deg, rgba(168, 85, 247, 0) 0%, #A855F7 42%, #EC4899 58%, rgba(236, 72, 153, 0) 100%);
+            animation: crawl 1.25s var(--ease) infinite;
+        }
+        .send-progress.connecting .sp-fill::after { background: none; animation: none; }
+        @keyframes crawl {
+            0%   { transform: translateX(-100%); }
+            100% { transform: translateX(200%); }
+        }
+        .send-progress.ok  .sp-fill { background: linear-gradient(90deg, #34D399 0%, #10B981 100%); box-shadow: 0 0 18px rgba(16, 185, 129, 0.6); }
+        .send-progress.ok  .sp-count, .send-progress.ok  .sp-pct { color: #6EE7B7; }
+        .send-progress.err .sp-fill { background: linear-gradient(90deg, #FB7185 0%, #E11D48 100%); box-shadow: 0 0 18px rgba(225, 29, 72, 0.55); }
+        .send-progress.err .sp-count, .send-progress.err .sp-pct { color: #FDA4AF; }
+
+        /* Metric chips under the bar */
+        .sp-foot {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 8px; flex-wrap: wrap; margin-top: 12px;
+        }
+        .spk {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 4px 10px; border-radius: 999px;
+            background: rgba(255, 255, 255, 0.055);
+            border: 1px solid rgba(255, 255, 255, 0.085);
+            font-family: var(--font-m); font-size: 0.59375rem; font-weight: 700;
+            letter-spacing: 0.14em; text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.5);
+            max-width: 100%; min-width: 0;
+        }
+        .spk b {
+            font-family: var(--font-m); font-size: 0.6875rem; font-weight: 700;
+            letter-spacing: 0.02em; text-transform: none;
+            color: #E9D5FF; font-variant-numeric: tabular-nums;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .spk.act { cursor: pointer; transition: background 0.2s, border-color 0.2s; }
+        .spk.act:active { background: rgba(255, 255, 255, 0.12); }
+        .spk.act.copied { border-color: rgba(52, 211, 153, 0.5); background: rgba(52, 211, 153, 0.12); }
+        .spk.act.copied b { color: #6EE7B7; }
+        .send-progress.ok .spk b { color: #6EE7B7; }
+
+        /* Per-device delivery feed — mirrors the server terminal lines */
+        .sp-feed {
+            margin-top: 11px; max-height: 124px; overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 12px; padding: 9px 11px;
+            font-family: var(--font-m); font-size: 0.65625rem; line-height: 1.75;
+            color: rgba(255, 255, 255, 0.7);
+        }
+        .sp-feed:empty { display: none; }
+        .sp-feed .fl { display: flex; gap: 7px; white-space: nowrap; animation: logIn 0.25s var(--ease); }
+        .sp-feed .fl .fok { color: #6EE7B7; font-weight: 700; }
+        .sp-feed .fl .fdev { color: #93C5FD; }
+        .sp-feed .fl .fsim { color: #F9A8D4; }
+        .sp-feed .fl .fnote { color: #C084FC; font-weight: 700; }
+        .sp-feed .fl .ferr { color: #FDA4AF; font-weight: 700; }
+        .sp-feed .fl .fhid { opacity: 0.5; }
+
+        /* Retry-failed button — sirf wahi messages jo actually fail hue */
+        .sp-retry {
+            display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+            margin-top: 10px; width: 100%;
+            padding: 9px 14px; border-radius: 11px;
+            background: rgba(244, 63, 94, 0.14);
+            border: 1px solid rgba(251, 113, 133, 0.32);
+            color: #FDA4AF; font-family: var(--font-m);
+            font-size: var(--fs-xs); font-weight: 700;
+            cursor: pointer;
+            transition: background 0.2s, border-color 0.2s, transform 0.15s;
+        }
+        .sp-retry[hidden] { display: none; }
+        .sp-retry:hover { background: rgba(244, 63, 94, 0.24); border-color: rgba(251, 113, 133, 0.55); }
+        .sp-retry:active { transform: scale(0.99); }
+        .sp-retry svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+        /* ---------- Banners ---------- */
+        .banner {
+            display: flex; gap: 13px; align-items: flex-start;
+            border-radius: 16px; padding: 15px 17px;
+            margin-top: 18px;
+            animation: bannerIn 0.45s var(--ease);
+        }
+        @keyframes bannerIn { from { opacity: 0; transform: translateY(8px) scale(0.99); } }
+        .banner.ok   { background: var(--green-soft); border: 1px solid rgba(15, 157, 88, 0.16); }
+        .banner.ok .bicon { background: linear-gradient(135deg, #10B981, #059669); box-shadow: 0 8px 18px -6px rgba(5, 150, 105, 0.5); }
+        .banner.ok b { color: var(--green-ink); }
+        .banner.err  { background: var(--red-soft); border: 1px solid rgba(225, 29, 72, 0.16); }
+        .banner.err .bicon { background: linear-gradient(135deg, #F43F5E, #E11D48); }
+        .banner.err b { color: var(--red); }
+        .bicon {
+            width: 27px; height: 27px; flex-shrink: 0;
+            display: grid; place-items: center;
+            border-radius: 50%; color: #fff;
+        }
+        .banner b { display: block; font-family: var(--font-h); font-size: 0.84375rem; font-weight: 700; }
+        .banner p { font-size: var(--fs-sm); color: var(--ink-2); margin-top: 2px; line-height: 1.55; }
+
+        /* ---------- Devices table (kept for API compatibility; section hidden by default) ---------- */
+        .table-scroll { overflow-x: auto; margin: 0 -8px; }
+        table { width: 100%; border-collapse: collapse; min-width: 620px; }
+        th {
+            text-align: left;
+            font-family: var(--font-m);
+            font-size: var(--fs-xs); font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.15em;
+            color: var(--ink-3);
+            padding: 10px 14px;
+            border-bottom: 1.5px solid var(--line);
+        }
+        td {
+            padding: 14px;
+            border-bottom: 1px solid var(--line);
+            font-size: var(--fs-base);
+            vertical-align: middle;
+        }
+        tbody tr:last-child td { border-bottom: none; }
+        tbody tr { transition: background 0.2s, opacity 0.35s var(--ease), transform 0.35s var(--ease); }
+        tbody tr:hover { background: rgba(124, 58, 237, 0.045); }
+        tbody tr.row-in { animation: rowIn 0.45s var(--ease) backwards; }
+        @keyframes rowIn { from { opacity: 0; transform: translateY(8px); } }
+
+        .dev-name { font-weight: 700; }
+        .dev-model { font-size: var(--fs-xs); color: var(--ink-3); margin-top: 2px; }
+        .mono { font-family: var(--font-m); font-size: 0.8125rem; color: var(--ink-2); }
+
+        .dev-pill {
+            display: inline-flex; align-items: center; gap: 7px;
+            font-family: var(--font-m);
+            font-size: var(--fs-xs); font-weight: 600;
+            padding: 5px 12px; border-radius: 999px;
+            border: 1px solid transparent;
+        }
+        .dev-pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+        .dev-pill.on { color: var(--green-ink); background: var(--green-soft); border-color: rgba(15, 157, 88, 0.22); }
+        .dev-pill.on .dot { background: var(--green); animation: pulse 2.2s infinite; }
+        .dev-pill.off { color: var(--ink-3); background: rgba(120, 90, 190, 0.07); border-color: var(--line); }
+        .dev-pill.off .dot { background: var(--ink-3); }
+
+        .batt { display: flex; align-items: center; gap: 10px; }
+        .btrack { width: 58px; height: 6px; flex-shrink: 0; border-radius: 999px; overflow: hidden; background: rgba(120, 90, 190, 0.12); display: inline-block; }
+        .bfill { display: block; height: 100%; border-radius: 999px; transition: width 0.7s var(--ease); }
+        .bfill.hi  { background: linear-gradient(90deg, #34D399, var(--green)); }
+        .bfill.mid { background: linear-gradient(90deg, #FBBF24, var(--amber)); }
+        .bfill.low { background: linear-gradient(90deg, #FB7185, var(--red)); }
+        .bval { font-family: var(--font-m); font-size: 0.78125rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+        .icon-btn {
+            width: 34px; height: 34px;
+            display: grid; place-items: center;
+            border-radius: 10px;
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--ink-3);
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .icon-btn:hover { color: var(--red); background: var(--red-soft); border-color: rgba(225, 29, 72, 0.2); }
+        .icon-btn.active { color: var(--amber); background: var(--amber-soft); border-color: rgba(217, 119, 6, 0.22); }
+
+        .tempty { padding: 44px 10px; text-align: center; color: var(--ink-3); font-size: var(--fs-base); }
+        .tempty .tempty-icon {
+            width: 58px; height: 58px; margin: 0 auto 14px;
+            display: grid; place-items: center;
+            border-radius: 50%;
+            background: var(--violet-soft); color: var(--violet);
+        }
+        .sk {
+            height: 38px; margin: 7px 0; border-radius: 12px;
+            background: linear-gradient(90deg, rgba(124, 58, 237, 0.06), rgba(124, 58, 237, 0.13), rgba(124, 58, 237, 0.06));
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+        }
+        @keyframes shimmer { to { background-position: -200% 0; } }
+
+        .stamp { font-family: var(--font-m); font-size: var(--fs-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+        .stamp.stale { color: var(--amber); }
+
+        /* ---------- Logs ---------- */
+        .logs {
+            background:
+                radial-gradient(420px 150px at 85% -10%, rgba(168, 85, 247, 0.16), transparent 60%),
+                var(--console);
+            border-radius: 18px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 16px 18px;
+            height: 210px;
+            overflow-y: auto;
+            font-family: var(--font-m);
+            font-size: 0.78125rem;
+            line-height: 1.95;
+            -webkit-overflow-scrolling: touch;
+        }
+        .logs::-webkit-scrollbar { width: 8px; }
+        .logs::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 99px; }
+        .logs::-webkit-scrollbar-thumb:hover { background: rgba(236, 72, 153, 0.5); }
+        .log-line { display: flex; gap: 10px; }
+        .log-line.log-in { animation: logIn 0.3s var(--ease); }
+        @keyframes logIn { from { opacity: 0; transform: translateX(-6px); } }
+        .log-t { color: rgba(255, 255, 255, 0.36); flex-shrink: 0; }
+        .lv { flex-shrink: 0; font-weight: 600; }
+        .lv-i { color: #93C5FD; }
+        .lv-ok { color: #6EE7B7; }
+        .lv-err { color: #FB7185; }
+        .log-msg { color: rgba(255, 255, 255, 0.84); word-break: break-word; }
+        .log-msg.err { color: #FB7185; }
+
+        .btn-clear {
+            display: inline-flex; align-items: center; gap: 7px;
+            min-height: 38px;
+            padding: 8px 15px;
+            border: none; border-radius: 12px;
+            background: var(--red-soft); color: var(--red);
+            font-size: 0.8125rem; font-weight: 700;
+            cursor: pointer; transition: 0.25s var(--ease);
+        }
+        .btn-clear:hover { background: #FBDCE3; transform: translateY(-1px); }
+
+        /* ---------- Toasts ---------- */
+        #toasts {
+            position: fixed; top: 18px; right: 18px; left: 18px; z-index: 100;
+            display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+            pointer-events: none;
+        }
+        .toast {
+            pointer-events: auto;
+            max-width: 350px; width: 100%;
+            background: rgba(255, 255, 255, 0.92);
+            backdrop-filter: var(--bar-blur);
+            -webkit-backdrop-filter: var(--bar-blur);
+            border: 1px solid rgba(255, 255, 255, 0.9);
+            border-left: 3px solid var(--violet);
+            border-radius: 14px;
+            padding: 13px 16px;
+            font-size: 0.8125rem;
+            box-shadow: 0 20px 46px -16px rgba(80, 50, 140, 0.42);
+            animation: toastIn 0.32s var(--ease);
+        }
+        .toast.ok { border-left-color: var(--green); }
+        .toast.err { border-left-color: var(--red); }
+        @keyframes toastIn { from { opacity: 0; transform: translateX(14px); } }
+
+        .foot { text-align: center; font-size: var(--fs-sm); color: var(--ink-3); padding: 26px 0 6px; }
+
+        /* ---------- Motion choreography (pure CSS, GPU-cheap) ---------- */
+        @keyframes riseIn {
+            from { opacity: 0; transform: translateY(20px) scale(0.99); }
+            to   { opacity: 1; transform: none; }
+        }
+        .rise { animation: riseIn 0.6s var(--ease) backwards; animation-delay: var(--d, 0s); }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation: none !important; transition: none !important; }
+        }
+
+        /* Fallback for browsers without backdrop-filter */
+        @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+            .topbar { background: rgba(255, 255, 255, 0.94); }
+            .card, .stat { background: rgba(255, 255, 255, 0.95); }
+            .toast { background: rgba(255, 255, 255, 0.97); }
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           SCROLL / RENDER PERFORMANCE (v6)
+           Bottlenecks that were diagnosed and removed:
+             1. backdrop-filter on stacked surfaces re-blurs the entire
+                viewport EVERY frame while scrolling → now tokenised and
+                DISABLED on touch devices, plus suspended 220ms after a
+                scroll gesture ends (body.is-scrolling).
+             2. Infinite scale() on 4 giant aurora layers forced a re-raster
+                per frame → translate-only on promoted layers, one blob made
+                static, all paused while scrolling.
+             3. A full-screen mask-image layer → replaced by a plain gradient
+                vignette (no mask raster at all).
+             4. Hover transforms could stick on touch devices → gated behind
+                (hover:hover) so they can never trap a finger.
+             5. All scroll work is rAF-throttled to a SINGLE class toggle per
+                frame: zero layout reads, zero forced reflow during scroll.
+             6. Cards carry layout/style containment, so scrolling one part
+                of the page cannot invalidate the rest.
+             7. Panels shorter (58px header, 42px icons, pill stats) → the
+                viewport paints fewer pixels per frame.
+           ═══════════════════════════════════════════════════════════════ */
+        html { scroll-behavior: auto; -webkit-text-size-adjust: 100%; }
+
+        @media (hover: none), (pointer: coarse) {
+            :root {
+                --glass-blur: none;
+                --bar-blur: none;
+                --card: rgba(255, 255, 255, 0.9);
+            }
+            .card:hover, .stat:hover, .btn:hover, .btn-clear:hover { transform: none; }
+            .card:hover { box-shadow: var(--shadow-card); border-color: rgba(255, 255, 255, 0.9); }
+        }
+
+        /* While the finger is down: kill every expensive composited effect. */
+        body.is-scrolling .blob,
+        body.is-scrolling .logo::before { animation-play-state: paused; }
+        body.is-scrolling .spotlight { opacity: 0 !important; }
+        body.is-scrolling .topbar,
+        body.is-scrolling .card,
+        body.is-scrolling .stat,
+        body.is-scrolling .toast {
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+        }
+        body.is-scrolling .topbar { background: rgba(255, 255, 255, 0.97); }
+
+        /* ---------- Mobile: stacked device cards (if list re-enabled) ---------- */
+        @media (max-width: 680px) {
+            .table-scroll { overflow: visible; margin: 0; }
+            table { min-width: 0; }
+            thead { display: none; }
+            table, tbody, tr, td { display: block; width: 100%; }
+            tbody tr {
+                background: rgba(255, 255, 255, 0.85);
+                border: 1px solid var(--line);
+                border-radius: 16px;
+                padding: 6px 16px;
+                margin: 10px 0;
+            }
+            tbody td { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: none; padding: 9px 0; }
+            tbody td:not(.devcell)::before {
+                content: attr(data-label);
+                font-family: var(--font-m);
+                font-size: var(--fs-xs); font-weight: 600;
+                text-transform: uppercase; letter-spacing: 0.12em;
+                color: var(--ink-3);
+                flex-shrink: 0;
+            }
+            tbody td.devcell { display: block; padding: 10px 0 4px; }
+            tbody td.devcell::before {
+                content: attr(data-label);
+                display: block;
+                font-family: var(--font-m);
+                font-size: var(--fs-xs); font-weight: 600;
+                text-transform: uppercase; letter-spacing: 0.12em;
+                color: var(--ink-3);
+                margin-bottom: 3px;
+            }
+            tbody td.act { justify-content: flex-end; padding-top: 4px; }
+            tbody td.act::before { content: none; }
+            tbody tr:hover { background: rgba(255, 255, 255, 0.85); }
+        }
+
+        /* ---------- Mobile typography & sizing fixes ---------- */
+        @media (max-width: 560px) {
+            html { font-size: 93.75%; }
+            .wrap { padding: 20px 16px 40px; }
+            .topbar-inner { padding: 0 14px; height: 54px; gap: 9px; }
+            .logo { width: 34px; height: 34px; border-radius: 11px; font-size: 0.9375rem; }
+            .brand strong { font-size: 0.9375rem; }
+            .online-pill { padding: 5px 10px; font-size: 0.6875rem; }
+            .pagehead h1 { letter-spacing: -0.02em; line-height: 1.18; }
+            .pagehead .overline { letter-spacing: 0.16em; }
+            .card { padding: 18px 15px; border-radius: 20px; }
+            .card-icon { width: 38px; height: 38px; border-radius: 12px; }
+            .card-icon svg { width: 18px; height: 18px; }
+            .card-head { gap: 11px; margin-bottom: 14px; }
+            .card-head-l { gap: 11px; }
+            .card-head h2 { font-size: 0.9375rem; }
+            .card-head p { font-size: 0.6875rem; }
+            .btn-row { grid-template-columns: 1fr; }
+            .btn { min-height: 44px; padding: 11px 16px; font-size: 0.875rem; border-radius: 13px; }
+            .btn.sm { min-height: 36px; padding: 7px 12px; }
+            input, textarea { padding: 12px 14px; }
+            .stamp { display: none; }
+            #toasts { top: 10px; right: 10px; left: 10px; }
+            .toast { max-width: none; padding: 11px 14px; }
+            .send-progress { padding: 13px 13px 12px; border-radius: 16px; }
+            font-size: var(--fs-xs); font-weight: 600;
+            padding: 5px 12px; border-radius: 999px;
+            border: 1px solid transparent;
+        }
+        .dev-pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+        .dev-pill.on { color: var(--green-ink); background: var(--green-soft); border-color: rgba(15, 157, 88, 0.22); }
+        .dev-pill.on .dot { background: var(--green); animation: pulse 2.2s infinite; }
+        .dev-pill.off { color: var(--ink-3); background: rgba(120, 90, 190, 0.07); border-color: var(--line); }
+        .dev-pill.off .dot { background: var(--ink-3); }
+
+        .batt { display: flex; align-items: center; gap: 10px; }
+        .btrack { width: 58px; height: 6px; flex-shrink: 0; border-radius: 999px; overflow: hidden; background: rgba(120, 90, 190, 0.12); display: inline-block; }
+        .bfill { display: block; height: 100%; border-radius: 999px; transition: width 0.7s var(--ease); }
+        .bfill.hi  { background: linear-gradient(90deg, #34D399, var(--green)); }
+        .bfill.mid { background: linear-gradient(90deg, #FBBF24, var(--amber)); }
+        .bfill.low { background: linear-gradient(90deg, #FB7185, var(--red)); }
+        .bval { font-family: var(--font-m); font-size: 0.78125rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+        .icon-btn {
+            width: 34px; height: 34px;
+            display: grid; place-items: center;
+            border-radius: 10px;
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--ink-3);
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .icon-btn:hover { color: var(--red); background: var(--red-soft); border-color: rgba(225, 29, 72, 0.2); }
+        .icon-btn.active { color: var(--amber); background: var(--amber-soft); border-color: rgba(217, 119, 6, 0.22); }
+
+        .tempty { padding: 44px 10px; text-align: center; color: var(--ink-3); font-size: var(--fs-base); }
+        .tempty .tempty-icon {
+            width: 58px; height: 58px; margin: 0 auto 14px;
+            display: grid; place-items: center;
+            border-radius: 50%;
+            background: var(--violet-soft); color: var(--violet);
+        }
+        .sk {
+            height: 38px; margin: 7px 0; border-radius: 12px;
+            background: linear-gradient(90deg, rgba(124, 58, 237, 0.06), rgba(124, 58, 237, 0.13), rgba(124, 58, 237, 0.06));
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+        }
+        @keyframes shimmer { to { background-position: -200% 0; } }
+
+        .stamp { font-family: var(--font-m); font-size: var(--fs-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+        .stamp.stale { color: var(--amber); }
+
+        /* ---------- Logs ---------- */
+        .logs {
+            background:
+                radial-gradient(420px 150px at 85% -10%, rgba(168, 85, 247, 0.16), transparent 60%),
+                var(--console);
+            border-radius: 18px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 16px 18px;
+            height: 210px;
+            overflow-y: auto;
+            font-family: var(--font-m);
+            font-size: 0.78125rem;
+            line-height: 1.95;
+            -webkit-overflow-scrolling: touch;
+        }
+        .logs::-webkit-scrollbar { width: 8px; }
+        .logs::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 99px; }
+        .logs::-webkit-scrollbar-thumb:hover { background: rgba(236, 72, 153, 0.5); }
+        .log-line { display: flex; gap: 10px; }
+        .log-line.log-in { animation: logIn 0.3s var(--ease); }
+        @keyframes logIn { from { opacity: 0; transform: translateX(-6px); } }
+        .log-t { color: rgba(255, 255, 255, 0.36); flex-shrink: 0; }
+        .lv { flex-shrink: 0; font-weight: 600; }
+        .lv-i { color: #93C5FD; }
+        .lv-ok { color: #6EE7B7; }
+        .lv-err { color: #FB7185; }
+        .log-msg { color: rgba(255, 255, 255, 0.84); word-break: break-word; }
+        .log-msg.err { color: #FB7185; }
+
+        .btn-clear {
+            display: inline-flex; align-items: center; gap: 7px;
+            min-height: 38px;
+            padding: 8px 15px;
+            border: none; border-radius: 12px;
+            background: var(--red-soft); color: var(--red);
+            font-size: 0.8125rem; font-weight: 700;
+            cursor: pointer; transition: 0.25s var(--ease);
+        }
+        .btn-clear:hover { background: #FBDCE3; transform: translateY(-1px); }
+
+        /* ---------- Toasts ---------- */
+        #toasts {
+            position: fixed; top: 18px; right: 18px; left: 18px; z-index: 100;
+            display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+            pointer-events: none;
+        }
+        .toast {
+            pointer-events: auto;
+            max-width: 350px; width: 100%;
+            background: rgba(255, 255, 255, 0.92);
+            backdrop-filter: var(--bar-blur);
+            -webkit-backdrop-filter: var(--bar-blur);
+            border: 1px solid rgba(255, 255, 255, 0.9);
+            border-left: 3px solid var(--violet);
+            border-radius: 14px;
+            padding: 13px 16px;
+            font-size: 0.8125rem;
+            box-shadow: 0 20px 46px -16px rgba(80, 50, 140, 0.42);
+            animation: toastIn 0.32s var(--ease);
+        }
+        .toast.ok { border-left-color: var(--green); }
+        .toast.err { border-left-color: var(--red); }
+        @keyframes toastIn { from { opacity: 0; transform: translateX(14px); } }
+
+        .foot { text-align: center; font-size: var(--fs-sm); color: var(--ink-3); padding: 26px 0 6px; }
+
+        /* ---------- Motion choreography (pure CSS, GPU-cheap) ---------- */
+        @keyframes riseIn {
+            from { opacity: 0; transform: translateY(20px) scale(0.99); }
+            to   { opacity: 1; transform: none; }
+        }
+        .rise { animation: riseIn 0.6s var(--ease) backwards; animation-delay: var(--d, 0s); }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation: none !important; transition: none !important; }
+        }
+
+        /* Fallback for browsers without backdrop-filter */
+        @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+            .topbar { background: rgba(255, 255, 255, 0.94); }
+            .card, .stat { background: rgba(255, 255, 255, 0.95); }
+            .toast { background: rgba(255, 255, 255, 0.97); }
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           SCROLL / RENDER PERFORMANCE (v6)
+           Bottlenecks that were diagnosed and removed:
+             1. backdrop-filter on stacked surfaces re-blurs the entire
+                viewport EVERY frame while scrolling → now tokenised and
+                DISABLED on touch devices, plus suspended 220ms after a
+                scroll gesture ends (body.is-scrolling).
+             2. Infinite scale() on 4 giant aurora layers forced a re-raster
+                per frame → translate-only on promoted layers, one blob made
+                static, all paused while scrolling.
+             3. A full-screen mask-image layer → replaced by a plain gradient
+                vignette (no mask raster at all).
+             4. Hover transforms could stick on touch devices → gated behind
+                (hover:hover) so they can never trap a finger.
+             5. All scroll work is rAF-throttled to a SINGLE class toggle per
+                frame: zero layout reads, zero forced reflow during scroll.
+             6. Cards carry layout/style containment, so scrolling one part
+                of the page cannot invalidate the rest.
+             7. Panels shorter (58px header, 42px icons, pill stats) → the
+                viewport paints fewer pixels per frame.
+           ═══════════════════════════════════════════════════════════════ */
+        html { scroll-behavior: auto; -webkit-text-size-adjust: 100%; }
+
+        @media (hover: none), (pointer: coarse) {
+            :root {
+                --glass-blur: none;
+                --bar-blur: none;
+                --card: rgba(255, 255, 255, 0.9);
+            }
+            .card:hover, .stat:hover, .btn:hover, .btn-clear:hover { transform: none; }
+            .card:hover { box-shadow: var(--shadow-card); border-color: rgba(255, 255, 255, 0.9); }
+        }
+
+        /* While the finger is down: kill every expensive composited effect. */
+        body.is-scrolling .blob,
+        body.is-scrolling .logo::before { animation-play-state: paused; }
+        body.is-scrolling .spotlight { opacity: 0 !important; }
+        body.is-scrolling .topbar,
+        body.is-scrolling .card,
+        body.is-scrolling .stat,
+        body.is-scrolling .toast {
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+        }
+        body.is-scrolling .topbar { background: rgba(255, 255, 255, 0.97); }
+
+        /* ---------- Mobile: stacked device cards (if list re-enabled) ---------- */
+        @media (max-width: 680px) {
+            .table-scroll { overflow: visible; margin: 0; }
+            table { min-width: 0; }
+            thead { display: none; }
+            table, tbody, tr, td { display: block; width: 100%; }
+            tbody tr {
+                background: rgba(255, 255, 255, 0.85);
+                border: 1px solid var(--line);
+                border-radius: 16px;
+                padding: 6px 16px;
+                margin: 10px 0;
+            }
+            tbody td { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: none; padding: 9px 0; }
+            tbody td:not(.devcell)::before {
+                content: attr(data-label);
+                font-family: var(--font-m);
+                font-size: var(--fs-xs); font-weight: 600;
+                text-transform: uppercase; letter-spacing: 0.12em;
+                color: var(--ink-3);
+                flex-shrink: 0;
+            }
+            tbody td.devcell { display: block; padding: 10px 0 4px; }
+            tbody td.devcell::before {
+                content: attr(data-label);
+                display: block;
+                font-family: var(--font-m);
+                font-size: var(--fs-xs); font-weight: 600;
+                text-transform: uppercase; letter-spacing: 0.12em;
+                color: var(--ink-3);
+                margin-bottom: 3px;
+            }
+            tbody td.act { justify-content: flex-end; padding-top: 4px; }
+            tbody td.act::before { content: none; }
+            tbody tr:hover { background: rgba(255, 255, 255, 0.85); }
+        }
+
+        /* ---------- Mobile typography & sizing fixes ---------- */
+        @media (max-width: 560px) {
+            html { font-size: 93.75%; }
+            .wrap { padding: 20px 16px 40px; }
+            .topbar-inner { padding: 0 14px; height: 54px; gap: 9px; }
+            .logo { width: 34px; height: 34px; border-radius: 11px; font-size: 0.9375rem; }
+            .brand strong { font-size: 0.9375rem; }
+            .online-pill { padding: 5px 10px; font-size: 0.6875rem; }
+            .pagehead h1 { letter-spacing: -0.02em; line-height: 1.18; }
+            .pagehead .overline { letter-spacing: 0.16em; }
+            .card { padding: 18px 15px; border-radius: 20px; }
+            .card-icon { width: 38px; height: 38px; border-radius: 12px; }
+            .card-icon svg { width: 18px; height: 18px; }
+            .card-head { gap: 11px; margin-bottom: 14px; }
+            .card-head-l { gap: 11px; }
+            .card-head h2 { font-size: 0.9375rem; }
+            .card-head p { font-size: 0.6875rem; }
+            .btn-row { grid-template-columns: 1fr; }
+            .btn { min-height: 44px; padding: 11px 16px; font-size: 0.875rem; border-radius: 13px; }
+            .btn.sm { min-height: 36px; padding: 7px 12px; }
+            input, textarea { padding: 12px 14px; }
+            .stamp { display: none; }
+            #toasts { top: 10px; right: 10px; left: 10px; }
+            .toast { max-width: none; padding: 11px 14px; }
+            .send-progress { padding: 13px 13px 12px; border-radius: 16px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="scene" aria-hidden="true">
+    <div class="blob b1"></div>
+    <div class="blob b2"></div>
+    <div class="blob b3"></div>
+    <div class="blob b4"></div>
+</div>
+<div class="spotlight" aria-hidden="true"></div>
+
+<header class="topbar">
+    <div class="topbar-inner">
+        <div class="logo">M</div>
+        <div class="brand">
+            <strong>Message <span>Gateway</span></strong>
+            <small>Aurora command console</small>
+        </div>
+        <div class="online-pill warn" id="connPill">
+            <span class="dot"></span>
+            <span id="connText">Offline</span>
+        </div>
+    </div>
+</header>
+
+<div id="toasts" aria-live="polite"></div>
+
+<main class="wrap">
+    <header class="pagehead rise" style="--d:.02s">
+        <div class="overline">MESSAGE GATEWAY</div>
+        <h1>Dispatch <em>messages</em> with confidence.</h1>
+        <p>Connect your Firebase gateway, monitor connected devices, and send broadcasts from one clean command console.</p>
+
+        <div class="stats-row">
+            <div class="stat s-indigo">
+                <span class="sicon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="5" y="2" width="14" height="20" rx="2"/>
+                        <line x1="12" y1="18" x2="12.01" y2="18"/>
+                    </svg>
+                </span>
+                <span><span class="sk">Devices</span><span class="sv" id="statTotal">0</span></span>
+            </div>
+            <div class="stat s-green">
+                <span class="sicon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M20 6L9 17l-5-5"/>
+                    </svg>
+                </span>
+                <span><span class="sk">Online</span><span class="sv" id="statOnline">0</span></span>
+            </div>
+            <div class="stat s-amber">
+                <span class="sicon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 8v4l3 2"/>
+                        <circle cx="12" cy="12" r="9"/>
+                    </svg>
+                </span>
+                <span><span class="sk">Sent</span><span class="sv" id="statSent">0</span></span>
+            </div>
+        </div>
+    </header>
+
+    <!-- 1 · FIREBASE CONFIGURATION -->
+    <section class="card rise" style="--d:.06s">
+        <div class="card-head row">
+            <div class="card-head-l">
+                <span class="card-icon db" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M5 20L7 4l5 4 2-3 5 15H5z"/>
+                    </svg>
+                </span>
+                <div>
+                    <h2>Firebase Configuration</h2>
+                    <p>Connect the gateway to your Realtime Database</p>
+                </div>
+            </div>
+            <span class="cmd-chip">POST /api/firebase</span>
+        </div>
+
+        <form onsubmit="saveFirebaseConfig(event)">
+            <div class="field">
+                <label for="fbUrl">
+                    Database URL
+                </label>
+                <div class="input-wrap">
+                    <input id="fbUrl" type="url" autocomplete="off" placeholder="https://your-project-default-rtdb.firebaseio.com" oninput="refreshUrlCheck()" />
+                    <span class="input-check" id="urlCheck" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l4 4L19 6"/></svg>
+                    </span>
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="fbKey">Authentication Key / Secret</label>
+                <div class="input-wrap">
+                    <input id="fbKey" class="has-eye" type="password" autocomplete="off" placeholder="Enter Firebase secret" />
+                    <button class="eye-btn" id="eyeBtn" type="button" aria-label="Show secret" onclick="toggleSecret()">
+                        <svg id="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                            <circle cx="12" cy="12" r="3"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn" id="fbBtn" type="submit">Connect Firebase</button>
+                <button class="btn secondary" id="refreshBtn" type="button" onclick="refreshAll()">Refresh Status</button>
+            </div>
+        </form>
+
+        <div class="banner ok" id="fbStatus" hidden>
+            <div class="bicon">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l4 4L19 6"/></svg>
+            </div>
+            <div>
+                <b id="fbPillText">Connected</b>
+                <p>Firebase gateway status</p>
+            </div>
+        </div>
+        <span id="fbPill" class="pill green" hidden><span class="dot"></span>Connected</span>
+    </section>
+
+    <!-- 2 · SEND BROADCAST -->
+    <section class="card rise" style="--d:.10s">
+        <div class="card-head row">
+            <div class="card-head-l">
+                <span class="card-icon chat" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M20 15a4 4 0 0 1-4 4H8l-4 3v-7a4 4 0 0 1-1-3V7a4 4 0 0 1 4-4h9a4 4 0 0 1 4 4v8z"/>
+                        <path d="M8 9h8M8 13h5"/>
+                    </svg>
+                </span>
+                <div>
+                    <h2>Send Broadcast</h2>
+                    <p>Dispatch a message through the connected device pool</p>
+                </div>
+            </div>
+            <span class="cmd-chip">POST /api/message</span>
+        </div>
+
+        <form onsubmit="sendBroadcast(event)">
+            <div class="field">
+                <label for="toPhone">Recipient phone number <span style="font-size:.68rem;color:var(--ink-3);font-weight:600">+91 fixed</span></label>
+                <div class="input-wrap">
+                    <input id="toPhone" type="tel" inputmode="numeric" autocomplete="tel" maxlength="10" pattern="[6-9][0-9]{9}" placeholder="9876543210" oninput="this.value=this.value.replace(/\D/g,'').slice(0,10); clearFieldError('toPhone')" />
+                </div>
+                <div class="field-error" id="toPhoneErr">Enter a valid phone number.</div>
+            </div>
+
+            <div class="field">
+                <label for="msgText">Message</label>
+                <textarea id="msgText" maxlength="500" placeholder="Write your message…" oninput="updateCount(); clearFieldError('msgText')"></textarea>
+                <div class="field-foot">
+                    <span>Keep the message concise</span>
+                    <span><b id="charCount">0</b> / 500</span>
+                </div>
+                <div class="field-error" id="msgTextErr">Message cannot be empty.</div>
+            </div>
+
+            <div class="field">
+                <label for="msgCount">Copies</label>
+                <div class="copy-row">
+                    <input id="msgCount" type="number" min="1" max="9999" value="1" oninput="updateCount()" />
+                    <div class="copy-picks">
+                        <button type="button" class="cpick on" data-n="1" onclick="setCount(1)">1</button>
+                        <button type="button" class="cpick" data-n="2" onclick="setCount(2)">2</button>
+                        <button type="button" class="cpick" data-n="3" onclick="setCount(3)">3</button>
+                        <button type="button" class="cpick" data-n="5" onclick="setCount(5)">5</button>
+                        <button type="button" class="cpick" data-n="10" onclick="setCount(10)">10</button>
+                    </div>
+                </div>
+                <div class="copy-hint"><b>1 copy = 1 message</b></div>
+                <div class="formula">
+                    <b id="planHead">Pool load ho raha hai…</b>
+                    <br><span id="planLine">1 SIM = 1 message · har device me 2 SIM</span>
+                </div>
+            </div>
+
+            <button class="btn wfull" id="sendBtn" type="submit">
+                Send Broadcast
+            </button>
+        </form>
+
+        <div class="send-progress connecting" id="sendProgress" hidden>
+            <div class="sp-top">
+                <div class="sp-label">
+                    <span class="spdot"></span>
+                    <span class="sptxt" id="spLabelTxt">Connecting…</span>
+                </div>
+                <div class="sp-right">
+                    <span class="sp-count" id="spCount">0 / 0</span>
+                    <span class="sp-pct" id="spPct">0%</span>
+                </div>
+            </div>
+            <div class="sp-track"><span class="sp-fill" id="spFill"></span></div>
+            <div class="sp-foot">
+                <span class="spk">POOL <b id="spPoolVal">—</b></span>
+                <span class="spk" id="spQueueChip" hidden>QUEUE <b id="spQueueVal">0</b></span>
+                <span class="spk act" id="spTo" onclick="copyTo()" title="Copy recipient">TO <b id="spToVal">—</b></span>
+                <span class="spk">SESSION <b id="spSession">0</b></span>
+            </div>
+            <div class="sp-feed" id="spFeed"></div>
+            <button class="sp-retry" id="spRetry" type="button" hidden onclick="retryFailed()">
+                <span>↻</span><span id="spRetryText"></span>
+            </button>
+        </div>
+    </section>
+
+    <!-- 3 · CONNECTED DEVICES -->
+    <section class="card rise" style="--d:.14s;display:none" id="devicesSection">
+        <div class="card-head row">
+            <div class="card-head-l">
+                <span class="card-icon ph" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <rect x="5" y="2" width="14" height="20" rx="2"/>
+                        <path d="M9 6h6M9 18h6"/>
+                    </svg>
+                </span>
+                <div>
+                    <h2>Connected Devices</h2>
+                    <p>Live gateway devices and delivery capacity</p>
+                </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
+                <span class="stamp" id="stamp">—</span>
+                <button class="icon-btn" id="pollBtn" aria-pressed="false" aria-label="Pause auto-refresh" title="Pause auto-refresh" onclick="togglePoll()">
+                    <svg id="pollIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                </button>
+                <span class="pill green" id="deviceCount"><span class="dot"></span>0</span>
+                <button class="btn secondary sm" id="refreshDevicesBtn" type="button" onclick="loadDevices()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    Refresh
+                </button>
+            </div>
+        </div>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr><th>Device Name</th><th>Phone</th><th>Battery</th><th>Status</th></tr>
+                </thead>
+                <tbody id="deviceTableBody"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- 4 · LOGS -->
+    <section class="card rise" style="--d:.17s">
+        <div class="card-head row">
+            <div class="card-head-l">
+                <span class="card-icon term" aria-hidden="true">
+                    <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+                    </svg>
+                </span>
+                <div>
+                    <h2>Logs</h2>
+                    <p>Live feed of every action from this console</p>
+                </div>
+            </div>
+            <button class="btn-clear" type="button" onclick="clearLogs()">
+                Clear
+            </button>
+        </div>
+        <div id="logs" class="logs" role="log" aria-live="polite" aria-label="Activity log"></div>
+    </section>
+
+    <footer class="foot rise" style="--d:.22s">Message Gateway · Aurora Glass v7 · command-console dispatch · same API, zero backend changes</footer>
+</main>
+
+<script>
+    const $ = (id) => document.getElementById(id);
+
+    const PAUSE_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+    const PLAY_SVG  = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 4 20 12 6 20 6 4"/></svg>';
+
+    const CAN_HOVER = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+
+    /* ---------- Cursor spotlight (transform-composited, desktop only) ---------- */
+    if (CAN_HOVER) {
+        const spot = document.getElementById('spotlight');
+        let spotRaf = 0, sx = 0, sy = 0;
+        document.addEventListener('pointermove', (e) => {
+            sx = e.clientX; sy = e.clientY;
+            if (spotRaf) return;
+            spotRaf = requestAnimationFrame(() => {
+                spot.style.transform = 'translate3d(' + sx + 'px,' + sy + 'px,0)';
+                spot.style.opacity = '1';
+                spotRaf = 0;
+            });
+        }, { passive: true });
+    }
+
+    /* ---------- Magnetic buttons (desktop only) ---------- */
+    if (CAN_HOVER) {
+        document.querySelectorAll('.btn, .btn-clear').forEach((b) => {
+            b.addEventListener('pointermove', (e) => {
+                const r = b.getBoundingClientRect();
+                const dx = (e.clientX - r.left - r.width / 2) / r.width;
+                const dy = (e.clientY - r.top - r.height / 2) / r.height;
+                b.style.transform = 'translate(' + dx * 5 + 'px,' + (dy * 4 - 2) + 'px)';
+            });
+            b.addEventListener('pointerleave', () => { b.style.transform = ''; });
+        });
+    }
+
+    /* ---------- PERF: rAF-throttled scroll — ONE class toggle per frame ----------
+       No layout reads, no per-event work: the handler early-returns while a
+       frame is already queued, so scroll can never trigger a forced reflow. */
+    (function scrollPerf() {
+        let ticking = false, idle = 0;
+        window.addEventListener('scroll', () => {
+            if (ticking) return;
+            ticking = true;
+            requestAnimationFrame(() => {
+                document.body.classList.add('is-scrolling');
+                clearTimeout(idle);
+                idle = setTimeout(() => document.body.classList.remove('is-scrolling'), 220);
+                ticking = false;
+            });
+        }, { passive: true });
+    })();
+
+    /* ---------- Count-up numbers ---------- */
+    function countUp(el, to) {
+        if (!el) return;
+        const from = parseInt(el.textContent, 10) || 0;
+        if (from === to) { el.textContent = to; return; }
+        const dur = 550;
+        const t0 = performance.now();
+        (function step(t) {
+            const p = Math.min(1, (t - t0) / dur);
+            const eased = 1 - Math.pow(1 - p, 3);
+            el.textContent = Math.round(from + (to - from) * eased);
+            if (p < 1) requestAnimationFrame(step);
+        })(t0);
+    }
+
+    /* ---------- Logging ---------- */
+    function printLog(msg, lv = 'i') {
+        const box = $('logs');
+        if (!box) return;
+        const line = document.createElement('div');
+        line.className = 'log-line log-in';
+        const t = document.createElement('span');
+        t.className = 'log-t';
+        t.textContent = '[' + new Date().toLocaleTimeString('en-GB') + ']';
+        const l = document.createElement('span');
+        l.className = 'lv lv-' + lv;
+        l.textContent = lv === 'ok' ? '✔' : lv === 'err' ? '✖' : '›';
+        const m = document.createElement('span');
+        m.className = 'log-msg' + (lv === 'err' ? ' err' : '');
+        m.textContent = msg;
+        line.append(t, l, m);
+        box.appendChild(line);
+        while (box.children.length > 250) box.removeChild(box.firstChild);
+        box.scrollTop = box.scrollHeight;
+    }
+
+    function clearLogs() {
+        $('logs').innerHTML = '';
+        printLog('Log cleared');
+    }
+
+    /* ---------- Toasts (auto-dismiss 3.5s) ---------- */
+    function toast(msg, type = 'info') {
+        const el = document.createElement('div');
+        el.className = 'toast ' + type;
+        el.textContent = msg;
+        $('toasts').appendChild(el);
+        setTimeout(() => {
+            el.style.transition = 'all .3s';
+            el.style.opacity = '0';
+            el.style.transform = 'translateX(12px)';
+            setTimeout(() => el.remove(), 320);
+        }, 3500);
+    }
+
+    /* ---------- Helpers ---------- */
+    function esc(s) {
+        return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        }[c]));
+    }
+
+    function fetchT(url, opts = {}, ms = 12000) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), ms);
+        return fetch(url, Object.assign({}, opts, { signal: ctrl.signal }))
+            .finally(() => clearTimeout(timer));
+    }
+
+    function errMsg(err) {
+        return err && err.name === 'AbortError' ? 'Request timed out' : (err && err.message) || 'unknown error';
+    }
+
+    function setConn(state, text) {
+        $('connPill').className = 'online-pill' + (state === 'conn-ok' ? '' : state === 'conn-warn' ? ' warn' : ' err');
+        $('connText').textContent = text;
+    }
+
+    function setFbPill(state, text) {
+        $('fbPill').className = 'pill ' + state;
+        $('fbPillText').textContent = text;
+    }
+
+    function skeletonRows() {
+        return [0, 1, 2].map(() => '<tr><td colspan="5"><div class="sk"></div></td></tr>').join('');
+    }
+
+    function updateCount() {
+        $('charCount').textContent = $('msgText').value.length + ' / 500';
+    }
+
+    /* ---------- How many messages ----------
+       New model: 1 SIM = 1 message (pura text, koi parts nahi).
+       Capacity = devices × 2 SIM (online + offline dono mila ke).
+       Agar count capacity se bada hai to extra messages QUEUE me chali
+       jaati hain aur jaise SIM khaali hote hi khud-ba-kud chalti hain. */
+    const SIMS_PER_DEVICE = 2;
+    const MAX_COUNT = 2000;
+    let poolCapacity = 0;      /* devices × 2, /api/devices se aata hai */
+
+    function clampCount(v) {
+        const n = parseInt(v, 10);
+        if (!Number.isFinite(n)) return 1;
+        return Math.max(1, Math.min(MAX_COUNT, n));
+    }
+
+    function getCount() {
+        return clampCount(($('msgCount') || {}).value);
+    }
+
+    function setCount(v) {
+        const n = clampCount(v);
+        const inp = $('msgCount');
+        if (inp && String(inp.value) !== String(n)) inp.value = n;
+        document.querySelectorAll('.cpick[data-n]').forEach((b) => {
+            b.classList.toggle('on', Number(b.dataset.n) === n);
+        });
+        renderPlan();
+    }
+
+    /* Live preview — user ko pehle se pata chal jata hai exact kya hoga */
+    function renderPlan() {
+        const n = getCount();
+        const cap = poolCapacity;
+        const head = $('planHead');
+        const line = $('planLine');
+        if (head && line) {
+            if (!cap) {
+                head.textContent = 'Pool load ho raha hai…';
+                line.textContent = '1 SIM = 1 message · har device me 2 SIM';
+            } else if (n <= cap) {
+                head.textContent = n + ' message abhi jaayenge';
+                line.textContent = 'Pool me ' + cap + ' SIM · 1 SIM = 1 message · sab ek hi batch me';
+            } else {
+                head.textContent = n + ' maange · pool me ' + cap + ' SIM';
+                line.textContent = '→ ' + cap + ' abhi jaayenge, ' + (n - cap) +
+                                   ' QUEUE me — SIM khaali hote hi auto chalu';
+            }
+        }
+        const pc = $('spPoolVal');
+        if (pc) pc.textContent = cap ? cap + ' SIM' : '—';
+    }
+
+    /* /api/devices se pool capacity (har device me 2 SIM) */
+    function setPoolCapacity(devices) {
+        const n = Array.isArray(devices) ? devices.length : 0;
+        poolCapacity = n * SIMS_PER_DEVICE;
+        renderPlan();
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       LIVE DISPATCH CONSOLE
+       Phase machine: connecting → sending → delivered | failed.
+       The backend answers {ok, queued, total}: when the gateway has
+       already pushed the SMS (your terminal shows HTTP 200) `queued`
+       comes back 0 — so the confirmed count is `total`, never "0 / 1344".
+       Label, counter and bar are all written from ONE value.
+       ═══════════════════════════════════════════════════════════ */
+    let spAnimTimer = null;   /* live delivered-counter animation */
+    let feedTimer = null;     /* per-device acknowledgement ticker */
+    let spStartedAt = 0;      /* dispatch start, for the duration readout */
+    let sessionSent = 0;      /* cumulative messages sent this session */
+    let lastDevices = [];     /* last known roster, used by the delivery feed */
+
+    function spSet(pct, label, count, state) {
+        const p = $('sendProgress');
+        if (!p) return;
+        p.classList.remove('connecting', 'sending', 'ok', 'err');
+        if (state) p.classList.add(state);
+        const f = $('spFill');
+        if (f) f.style.width = Math.max(0, Math.min(100, pct)) + '%';
+        if (label !== undefined) $('spLabelTxt').textContent = label;
+        if (count !== undefined) $('spCount').textContent = count;
+        $('spPct').textContent = Math.max(0, Math.min(100, Math.round(pct))) + '%';
+    }
+
+    function spReset(to) {
+        const p = $('sendProgress');
+        if (!p) return;
+        spStop();
+        clearInterval(spAnimTimer);
+        spAnimTimer = null;
+        clearInterval(feedTimer);
+        feedTimer = null;
+        spSessionBase = sessionSent;
+        const feed = $('spFeed');
+        if (feed) feed.innerHTML = '';
+        p.hidden = false;
+        $('spToVal').textContent = to;
+        spStartedAt = Date.now();
+        spShowRetry(0);
+        updateSessionChips();
+        spSet(0, 'Opening dispatch channel to ' + to + '…', 'connecting', 'connecting');
+        spNote('POST /api/message · handshaking with gateway', 'fnote');
+    }
+
+    /* Real delivery counter — the label, the number and the bar all come
+       from the same `cur`, so the three can never contradict each other. */
+    function spAnimateSent(sent, target) {
+        /* LEGACY — replaced by spWatch(). Kept only so an old cached copy of
+           this file never hard-breaks mid-blast. */
+        const total = Math.max(1, target || sent || 1);
+        spSet(100, '✔ ' + sent + ' message' + (sent === 1 ? '' : 's') + ' delivered',
+              sent + ' / ' + total, 'ok');
+    }
+
+    function spFail(msg) {
+        spStop();
+        spSet(0, '✖ ' + msg, '0 / 0', 'err');
+        spNote('Dispatch failed: ' + msg, 'ferr');
+    }
+
+    /* Plain narration line inside the console feed */
+    function spNote(text, tone) {
+        const f = $('spFeed');
+        if (!f) return;
+        const line = document.createElement('div');
+        line.className = 'fl';
+        line.innerHTML = '<span class="' + (tone || 'fnote') + '">›</span>' +
+                         '<span class="fhid">' + esc(text) + '</span>';
+        f.appendChild(line);
+        while (f.children.length > 40) f.removeChild(f.firstChild);
+        f.scrollTop = f.scrollHeight;
+    }
+
+    /* Tap the "To" chip to copy the recipient number */
+    function copyTo() {
+        const chip = $('spTo');
+        const val = $('spToVal');
+        if (!chip || !val) return;
+        const txt = (val.textContent || '').trim();
+        if (!txt || txt === '—') return;
+        const flash = () => {
+            chip.classList.add('copied');
+            setTimeout(() => chip.classList.remove('copied'), 1200);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(txt).then(flash, () => {});
+        } else {
+            flash();
+        }
+    }
+
+    function updateSessionChips(j) {
+        const live = (j && typeof j.sent === 'number') ? spSessionBase + j.sent : sessionSent;
+        const s = $('spSession');
+        if (s) s.textContent = live;
+        const t = $('statSent');
+        if (t) t.textContent = live;
+        updateQueueChip(j);
+    }
+
+    /* Pool capacity + auto-queue badge (dono /api/delivery se aate hain) */
+    function updateQueueChip(j) {
+        if (j && j.capacity) {
+            poolCapacity = Number(j.capacity) || poolCapacity;
+            const pc = $('spPoolVal');
+            if (pc) pc.textContent = poolCapacity + ' SIM';
+        }
+        const chip = $('spQueueChip');
+        const val = $('spQueueVal');
+        if (!chip || !val) return;
+        const q = j && typeof j.queued === 'number' ? j.queued : 0;
+        chip.hidden = !q;
+        val.textContent = q;
+        if (q) chip.title = q + ' message auto-queue me — SIM khaali hote hi khud bhejenge';
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       REAL PROGRESS — the browser NEVER invents a number.
+       POST /api/message returns a job_id. From then on every digit on
+       screen comes from GET /api/delivery, which is the exact same
+       tracker the Telegram bot reads. Counters cannot disagree with
+       each other or with your server log.
+       ═══════════════════════════════════════════════════════════ */
+    let spPoll = null;
+    let spJobId = null;
+    let spSessionBase = 0;
+
+    function spStop() {
+        if (spPoll) { clearInterval(spPoll); spPoll = null; }
+        spJobId = null;
+    }
+
+    function spShowRetry(count) {
+        const btn = $('spRetry');
+        if (!btn) return;
+        btn.hidden = !count;
+        btn.dataset.count = count || 0;
+        const label = $('spRetryText');
+        if (label) label.textContent = count ? 'Retry ' + count + ' failed message(s)' : '';
+    }
+
+    function spRenderDevices(j) {
+        const f = $('spFeed');
+        if (!f || !Array.isArray(j.devices)) return;
+        f.innerHTML = '';
+        const bad = j.devices.filter((d) => d.failed > 0);
+        const good = j.devices.filter((d) => !d.failed);
+        const req = j.requested || j.total || 0;
+        const cap = j.capacity || (j.devices.length * SIMS_PER_DEVICE);
+        spNote(j.active + '/' + j.devices.length + ' device(s) online · pool ' + cap + ' SIM · '
+               + j.dispatched + ' abhi bheje · ' + (j.queued ? j.queued + ' queue me' : 'sab abhi')
+               + ' · total ' + req, 'fnote');
+        for (const d of good) spLine(d, true);
+        for (const d of bad) spLine(d, false);
+    }
+
+    function spLine(d, ok) {
+        const f = $('spFeed');
+        if (!f) return;
+        const line = document.createElement('div');
+        line.className = 'fl';
+        line.innerHTML =
+            '<span class="' + (ok ? 'fok' : 'ferr') + '">' + (ok ? '✔' : '✖') + '</span>' +
+            '<span class="' + (d.status ? 'fdev' : 'ferr') + '">' + esc(String(d.name).slice(0, 18)) + '</span>' +
+            '<span class="' + (ok ? 'fok' : 'ferr') + '">' + d.sent + '/' + d.total + ' sent</span>' +
+            (d.failed ? '<span class="ferr">' + d.failed + ' failed</span>' : '') +
+            (d.status ? '' : '<span class="fhid">OFFLINE</span>');
+        f.appendChild(line);
+        while (f.children.length > 60) f.removeChild(f.firstChild);
+        f.scrollTop = f.scrollHeight;
+    }
+
+    function spWatch(jobId) {
+        spStop();
+        spJobId = jobId || null;
+        const tick = async () => {
+            let data;
+            try {
+                const url = '/api/delivery' + (spJobId ? '?job=' + encodeURIComponent(spJobId) : '');
+                const res = await fetchT(url, {}, 10000);
+                data = await res.json();
+            } catch (err) {
+                return;                       // transient — next tick will retry
+            }
+            const j = data && data.job;
+            if (!j || !j.total) return;
+
+            updateSessionChips(j);
+
+            if (j.running) {
+                spSet(j.percent || 0,
+                      'Delivering… ' + j.sent + ' of ' + j.total
+                          + (j.queued ? ' · ' + j.queued + ' queue me' : ''),
+                      j.sent + ' / ' + j.total, 'sending');
+                return;
+            }
+
+            /* finished */
+            spStop();
+            sessionSent = spSessionBase + j.sent;
+            updateSessionChips();
+            spSet(100,
+                  j.interrupted ? '⚠ Blast interrupted (server restarted)'
+                                : '✔ ' + j.sent + ' message' + (j.sent === 1 ? '' : 's') + ' delivered',
+                  j.sent + ' / ' + j.total, j.interrupted ? 'err' : 'ok');
+            spRenderDevices(j);
+            spNote((j.interrupted ? 'Interrupted · ' : 'Done in ' + j.elapsed + 's · ')
+                   + 'maanga ' + (j.requested || j.total) + ' · pool ' + (j.capacity || '?') + ' SIM · '
+                   + j.sent + ' delivered · ' + j.failed + ' failed'
+                   + (j.queued ? ' · ' + j.queued + ' queue me' : '')
+                   + ' · ' + (j.rate || 0) + '/s', j.failed ? 'ferr' : 'fok');
+            spShowRetry(j.failed_tasks);
+            printLog('Blast ' + j.id + ': ' + j.sent + '/' + j.total + ' delivered, '
+                     + j.failed + ' failed in ' + j.elapsed + 's', j.failed ? 'err' : 'ok');
+            if (j.failed) toast(j.sent + ' delivered · ' + j.failed + ' failed', 'err');
+            else toast(j.sent + ' message(s) delivered in ' + j.elapsed + 's', 'ok');
+        };
+        spPoll = setInterval(tick, 900);
+        tick();
+    }
+
+    /* Sirf fail hue messages dobara bhejo — successful wapas nahi jayenge. */
+    async function retryFailed() {
+        const btn = $('spRetry');
+        const count = Number(btn && btn.dataset.count) || 0;
+        if (!count) return;
+        const to = ($('spToVal') || {}).textContent || '';
+        spReset(to);
+        spShowRetry(0);
+        try {
+            const res = await fetchT('/api/message-retry', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            }, 20000);
+            const data = await res.json();
+            if (!data.ok) { spFail(data.error || 'Retry failed'); return; }
+            spNote('Retrying ' + data.retried + ' failed message(s) on '
+                   + data.devices_count + ' device(s)', 'fnote');
+            spWatch(data.job_id);
+        } catch (err) {
+            spFail(errMsg(err));
+        }
+    }
+
+    /* Page reload / refresh ke baad bhi REAL numbers dikhen
+       (restoreDelivery() neeche defined hai, init() usse call karta hai). */
+
+    /* Per-device results come straight from the server job — no simulation. */
+
+    /* ---------- Secret eye toggle ---------- */
+    function toggleSecret() {
+        const input = $('fbKey');
+        const showing = input.type === 'text';
+        input.type = showing ? 'password' : 'text';
+        $('eyeIcon').outerHTML = showing
+            ? '<svg id="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
+            : '<svg id="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+        $('eyeBtn').setAttribute('aria-label', showing ? 'Show secret' : 'Hide secret');
+    }
+
+    /* ---------- URL live check ---------- */
+    function refreshUrlCheck() {
+        const v = $('fbUrl').value.trim();
+        $('urlCheck').classList.toggle('show', /^https:\/\/[\w.-]+/i.test(v));
+    }
+
+    /* ---------- Stats (Devices · Online only) ---------- */
+    function updateStats(devices) {
+        const list = devices || [];
+        lastDevices = list;
+        const online = list.filter((d) => d.status).length;
+        countUp($('statTotal'), list.length);
+        countUp($('statOnline'), online);
+        const chip = $('deviceCount');
+        if (chip) chip.innerHTML = '<span class="dot"></span>' + list.length;
+    }
+
+    /* ---------- Inline validation ---------- */
+    function setFieldError(id, on) {
+        const field = $(id);
+        const err = $(id + 'Err');
+        if (!field || !err) return;
+        field.classList.toggle('invalid', on);
+        err.classList.toggle('show', on);
+    }
+
+    function clearFieldError(id) {
+        const field = $(id);
+        if (!field) return;
+        if (id === 'toPhone' && !/^[6-9]\d{9}$/.test(field.value.replace(/\D/g, '').slice(-10))) return;
+        if (id === 'msgText' && !field.value.trim()) return;
+        setFieldError(id, false);
+    }
+
+    function validatePhone() {
+        const digits = $('toPhone').value.replace(/\D/g, '').slice(-10);
+        $('toPhone').value = digits;
+        const ok = /^[6-9]\d{9}$/.test(digits);
+        setFieldError('toPhone', !ok);
+        return ok;
+    }
+
+    function normalizeIndianPhone() {
+        const digits = $('toPhone').value.replace(/\D/g, '').slice(-10);
+        $('toPhone').value = digits;
+        return '+91' + digits;
+    }
+
+    function validateMessage() {
+        const ok = !!$('msgText').value.trim();
+        setFieldError('msgText', !ok);
+        return ok;
+    }
+
+    /* ---------- Live telemetry: auto-refresh + stamp ---------- */
+    const POLL_MS = 30000;
+    const STALE_MS = 90000;
+    let pollTimer = null;
+    let pollPaused = false;
+    let connected = false;
+    let lastLoaded = 0;
+
+    function fmtStamp() {
+        if (!lastLoaded) return '—';
+        const s = Math.floor((Date.now() - lastLoaded) / 1000);
+        if (s < 5) return 'Updated just now';
+        if (s < 60) return 'Updated ' + s + 's ago';
+        const m = Math.floor(s / 60);
+        const stale = Date.now() - lastLoaded > STALE_MS;
+        return (stale ? 'Stale · ' : 'Updated ') + m + 'm ago';
+    }
+
+    setInterval(() => {
+        const el = $('stamp');
+        if (!el) return;
+        el.textContent = fmtStamp();
+        el.classList.toggle('stale', lastLoaded > 0 && Date.now() - lastLoaded > STALE_MS);
+    }, 5000);
+
+    function setPollIcon() {
+        const btn = $('pollBtn');
+        const icon = $('pollIcon');
+        if (!btn || !icon) return;
+        const active = !!pollTimer;
+        icon.outerHTML = (active ? PAUSE_SVG : PLAY_SVG).replace('<svg ', '<svg id="pollIcon" ');
+        btn.classList.toggle('active', !active);
+        btn.setAttribute('aria-pressed', String(!active));
+        btn.setAttribute('aria-label', active ? 'Pause auto-refresh' : 'Resume auto-refresh');
+        btn.title = active ? 'Auto-refresh every 30s' : 'Auto-refresh is paused';
+    }
+
+    function startPolling() {
+        if (pollTimer) return;
+        pollTimer = setInterval(() => {
+            if (!document.hidden) loadDevices(true);
+        }, POLL_MS);
+        setPollIcon();
+    }
+
+    function stopPolling() {
+        if (!pollTimer) return;
+        clearInterval(pollTimer);
+        pollTimer = null;
+        setPollIcon();
+    }
+
+    function togglePoll() {
+        if (pollTimer) {
+            stopPolling();
+            pollPaused = true;
+            printLog('Auto-refresh paused');
+        } else {
+            pollPaused = false;
+            startPolling();
+            loadDevices(true);
+            printLog('Auto-refresh resumed (every 30s)');
+        }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopPolling();
+        } else if (connected && !pollPaused) {
+            loadDevices(true);
+            startPolling();
+        }
+    });
+
+    /* ---------- Refresh all ---------- */
+    function refreshAll() {
+        const btn = $('refreshBtn');
+        btn.classList.add('spinning');
+        printLog('Refreshing backend status…');
+        Promise.resolve(init(true)).finally(() => btn.classList.remove('spinning'));
+    }
+
+    /* ---------- Firebase ---------- */
+    async function saveFirebaseConfig(e) {
+        e && e.preventDefault && e.preventDefault();
+        const url = $('fbUrl').value.trim();
+        const key = $('fbKey').value.trim();
+        if (!url || !key) {
+            toast('Both Database URL and secret are required', 'err');
+            printLog('Connect skipped: missing URL or secret', 'err');
+            return;
+        }
+
+        const btn = $('fbBtn');
+        const orig = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = 'Connecting…';
+        printLog('Connecting to Firebase…');
+
+        try {
+            const res = await fetchT('/api/firebase', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url, key }),
+            }, 15000);
+            const data = await res.json();
+            if (data.ok) {
+                connected = true;
+                printLog('Firebase connected successfully', 'ok');
+                toast('Firebase connected successfully', 'ok');
+                setConn('conn-ok', 'Online');
+                setFbPill('green', 'Connected');
+                if (!pollPaused) startPolling();
+                loadDevices();
+            } else {
+                printLog('Connect failed: ' + (data.error || 'unknown error'), 'err');
+                toast(data.error || 'Failed to connect Firebase', 'err');
+                setFbPill('red', 'Failed');
+            }
+        } catch (err) {
+            printLog('Network error: ' + errMsg(err), 'err');
+            toast('Could not reach the backend', 'err');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = orig;
+        }
+    }
+
+    /* ---------- Devices (list hidden in UI; API still polled for stats) ---------- */
+    async function loadDevices(silent) {
+        const tbody = $('deviceTableBody');
+        const btn = $('refreshDevicesBtn');
+        btn && btn.classList.add('spinning');
+        if (tbody) tbody.innerHTML = skeletonRows();
+
+        try {
+            const res = await fetchT('/api/devices', {}, 12000);
+            const data = await res.json();
+            lastLoaded = Date.now();
+            const stamp = $('stamp');
+            if (stamp) { stamp.textContent = fmtStamp(); stamp.classList.remove('stale'); }
+
+            if (!data.ok || !data.devices || !data.devices.length) {
+                updateStats([]);
+                if (tbody) tbody.innerHTML = '<tr><td colspan="5"><div class="tempty"><div class="tempty-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></div>No devices connected yet. Power on a gateway device and it will appear here automatically.</div></td></tr>';
+                if (!silent) printLog('No devices found');
+                return;
+            }
+
+            updateStats(data.devices);
+            if (tbody) {
+                tbody.innerHTML = '';
+                data.devices.forEach((dev, i) => {
+                    const p = dev.batteryPercent;
+                    const bcls = p === undefined ? '' : p >= 50 ? 'hi' : p >= 20 ? 'mid' : 'low';
+                    const tr = document.createElement('tr');
+                    tr.className = 'row-in';
+                    tr.style.animationDelay = (i * 45) + 'ms';
+                    tr.innerHTML = `
+                        <td class="devcell" data-label="Device">
+                            <div class="dev-name">${esc(dev.name)}</div>
+                            <div class="dev-model">${esc(dev.model)}</div>
+                        </td>
+                        <td class="mono" data-label="Phone">${esc(dev.phoneNumber)}</td>
+                        <td data-label="Battery">${
+                            p !== undefined
+                                ? `<div class="batt"><span class="btrack"><span class="bfill ${bcls}" style="width:${Math.min(100, p)}%"></span></span><span class="bval">${p}%</span></div>`
+                                : '<span class="bval">—</span>'
+                        }</td>
+                        <td data-label="Status"><span class="dev-pill ${dev.status ? 'on' : 'off'}"><span class="dot"></span>${dev.status ? 'Online' : 'Offline'}</span></td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            }
+            lastDevices = data.devices;
+            setPoolCapacity(data.devices);
+            if (!silent) printLog('Loaded ' + data.devices.length + ' device' + (data.devices.length === 1 ? '' : 's') + ' · pool ' + poolCapacity + ' SIM', 'ok');
+        } catch (err) {
+            if (tbody) tbody.innerHTML = '<tr><td colspan="5"><div class="tempty">Couldn\'t load devices — ' + esc(errMsg(err)) + '. Is the backend running?</div></td></tr>';
+            if (!silent) printLog('Load devices failed: ' + errMsg(err), 'err');
+        } finally {
+            btn && btn.classList.remove('spinning');
+        }
+    }
+
+    const tbodyEl = document.getElementById('deviceTableBody');
+
+    /* ---------- Messaging (with live progress) ---------- */
+    async function sendBroadcast(e) {
+        e && e.preventDefault && e.preventDefault();
+        const phoneOk = validatePhone();
+        const msgOk = validateMessage();
+        if (!phoneOk) { $('toPhone').focus(); return; }
+        if (!msgOk) { $('msgText').focus(); return; }
+
+        const to = normalizeIndianPhone();
+        const message = $('msgText').value.trim();
+        const count = getCount();
+
+        const btn = $('sendBtn');
+        const orig = btn.innerHTML;
+        btn.disabled = true;
+        btn.classList.add('busy');
+        btn.innerHTML = '<span class="bspin"></span>Dispatching…';
+        printLog('Dispatching ' + count + ' message(s) to ' + to + '…');
+        spReset(to);
+
+        try {
+            const res = await fetchT('/api/message', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ to, message, count }),
+            }, 20000);
+            const data = await res.json();
+            if (data.ok) {
+                const queued = Number(data.queued) || 0;
+                const total = Number(data.requested) || Number(data.total) || count || 0;
+                const cap = Number(data.capacity) || poolCapacity;
+                poolCapacity = cap;
+                renderPlan();
+                /* Fire-and-forget ho gaya — ab har number GET /api/delivery se
+                   aayega, jo wahi tracker hai jo Telegram bot padhta hai. */
+                spSessionBase = sessionSent;
+                spSet(0, 'Blast queued · gateway is fanning out', '0 / ' + total, 'connecting');
+                spNote('Job ' + (data.job_id || '?') + ' accepted · '
+                       + (data.devices_count || 0) + ' devices · pool ' + cap + ' SIM · '
+                       + 'maanga ' + total + ' · ' + (Number(data.dispatched) || 0) + ' abhi bhejne'
+                       + (queued ? ', ' + queued + ' QUEUE me (auto bhejenge)' : ''), 'fnote');
+                spWatch(data.job_id);
+                $('msgText').value = '';
+                setFieldError('msgText', false);
+                updateCount();
+            } else {
+                spFail(data.error || 'Dispatch failed');
+                printLog('Dispatch failed: ' + (data.error || 'unknown error'), 'err');
+                toast(data.error || 'Dispatch failed', 'err');
+            }
+        } catch (err) {
+            spFail(errMsg(err));
+            printLog('Network error: ' + errMsg(err), 'err');
+            toast('Could not reach the backend', 'err');
+        } finally {
+            btn.disabled = false;
+            btn.classList.remove('busy');
+            btn.innerHTML = orig;
+        }
+    }
+
+    /* Server ke last blast ko panel me wapas laao (reload / refresh ke baad). */
+    async function restoreDelivery() {
+        try {
+            const res = await fetchT('/api/delivery', {}, 10000);
+            const data = await res.json();
+            const j = data && data.job;
+            if (!j || !j.total) return;
+            spSessionBase = sessionSent;
+            $('sendProgress').hidden = false;
+            $('spToVal').textContent = j.to || '—';
+            updateSessionChips(j);
+            spShowRetry(j.failed_tasks);
+            if (j.running) {
+                spSet(j.percent || 0, 'Delivering… ' + j.sent + ' of ' + j.total
+                        + (j.queued ? ' · ' + j.queued + ' queue me' : ''),
+                      j.sent + ' / ' + j.total, 'sending');
+                spRenderDevices(j);
+                spWatch(j.id);
+            } else {
+                sessionSent = spSessionBase + j.sent;
+                updateSessionChips();
+                spSet(100,
+                      j.interrupted ? '⚠ Last blast was interrupted'
+                                    : '✔ ' + j.sent + ' message' + (j.sent === 1 ? '' : 's') + ' delivered',
+                      j.sent + ' / ' + j.total, j.interrupted ? 'err' : 'ok');
+                spRenderDevices(j);
+            }
+        } catch (err) {
+            /* backend abhi reachable nahi */
+        }
+    }
+
+    /* ---------- Boot ---------- */
+    async function init(isRefresh) {
+        try {
+            const res = await fetchT('/api/status', {}, 8000);
+            const data = await res.json();
+            if (data.configured) {
+                connected = true;
+                setConn('conn-ok', 'Online');
+                setFbPill('green', 'Connected');
+                if (!pollPaused) startPolling();
+                loadDevices(isRefresh);
+            } else {
+                setConn('conn-warn', 'Offline');
+                setFbPill('amber', 'Not connected');
+                if (!isRefresh) printLog('Backend online, but Firebase is not configured yet.');
+            }
+        } catch {
+            setConn('conn-err', 'Offline');
+            setFbPill('red', 'No backend');
+            printLog('Backend status unavailable', 'err');
+        }
+        if (!isRefresh) updateCount();
+        setCount(getCount());
+        restoreDelivery();
+    }
+
+    init(false);
+</script>
+
+</body>
+</html>
