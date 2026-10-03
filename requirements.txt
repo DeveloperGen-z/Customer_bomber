@@ -1,2 +1,5 @@
-Flask>=3.0,<4
-pyTelegramBotAPI>=4.20,<6
+Flask
+requests
+pyTelegramBotAPI
+firebase-admin
+gunicorn
