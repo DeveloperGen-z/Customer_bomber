@@ -954,7 +954,6 @@ def estimate_time(count, devices):
     if not devices:
         return None
     try:
-        # Fetch interval from gateway status
         st = api('/api/status', timeout=5)
         interval = float(st.get('send_interval', 2.0))
     except Exception:
@@ -1752,10 +1751,15 @@ def main():
     except Exception as e:
         log(f'⚠ Gateway probe failed: {e}')
 
+    # Version-safe polling
+    log('🚀 Bot polling started...')
     try:
-        bot.infinity_polling(skip_signal_handlers=False, skip_pending=True)
+        bot.infinity_polling(skip_pending=True)
     except TypeError:
-        bot.infinity_polling()
+        try:
+            bot.infinity_polling()
+        except TypeError:
+            bot.polling(none_stop=True, skip_pending=True)
 
 
 if __name__ == '__main__':
